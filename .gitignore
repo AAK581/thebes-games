@@ -1,0 +1,7 @@
+# build outputs
+build/
+backend/target/
+
+# local identity material never belongs in a repo
+*.seed
+*.secret.json
