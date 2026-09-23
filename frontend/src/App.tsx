@@ -1,67 +1,73 @@
-import { useEffect, useState } from "react";
-import { call, encodeEmpty, encodeText, query } from "./thebes";
+/**
+ * App — the shell: masthead, hash routes, colophon. One useMemphis
+ * instance lives here and is passed down, so the header chip and the
+ * upload gate always agree about who is signed in.
+ */
+import { useEffect, useRef, useState } from "react";
 import { useTheme } from "./useTheme";
 import { useMemphis } from "./useMemphis";
+import { clearAllConsent } from "./memphisDelegation";
 import MemphisGate from "./MemphisGate";
+import { useHashRoute } from "./router";
+import { Frieze, Mark } from "./components";
+import Home from "./pages/Home";
+import GamePage from "./pages/Game";
+import Upload from "./pages/Upload";
+import Log from "./pages/Log";
 
 export default function App() {
   const auth = useMemphis();
   const theme = useTheme();
-  const [name, setName] = useState("");
-  const [greeting, setGreeting] = useState<string | null>(null);
-  const [count, setCount] = useState<bigint | null>(null);
-  const [countFailed, setCountFailed] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const route = useHashRoute();
+  const [authOpen, setAuthOpen] = useState(false);
 
-  async function refreshCount() {
-    try {
-      const v = await query("get_count", encodeEmpty());
-      setCount(typeof v === "bigint" ? v : null);
-      setCountFailed(false);
-    } catch (e) {
-      // Show the failure instead of leaving the counter on "…" forever.
-      setCountFailed(true);
-      setError(String(e));
-    }
-  }
-
+  // Per-game delegated-sign-in consent is remembered until the platform
+  // signs out (spec §5.1). Drop it all on the signed-in → signed-out edge.
+  const prevSignedIn = useRef(auth.signedIn);
   useEffect(() => {
-    void refreshCount();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (prevSignedIn.current && !auth.signedIn) clearAllConsent();
+    prevSignedIn.current = auth.signedIn;
+  }, [auth.signedIn]);
 
-  async function onGreet(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    try {
-      // Signed in? Greet the Memphis identity by name.
-      const who = name || auth.displayName || "traveller";
-      const v = await query("greet", encodeText(who));
-      setGreeting(String(v));
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  async function onIncrement() {
-    setError(null);
-    setBusy(true);
-    try {
-      const v = await call("increment", encodeEmpty());
-      if (typeof v === "bigint") setCount(v);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
+  const current = (name: string) =>
+    route.name === name ? { "aria-current": "page" as const } : {};
 
   return (
-    <main className="shell">
-      <header>
-        {/* Follows the OS by default; this flips to an explicit choice
-            that persists (scoped to this app — see useTheme). */}
+    <div className="site">
+      <header className="masthead">
+        <a className="wordmark" href="#/">
+          <Mark />
+          <span className="name">Thebes Games</span>
+        </a>
+        <span
+          className="chip"
+          title="Catalogue entries are placeholders until the registry canister lands — the three embedded games are real."
+        >
+          demo shelf
+        </span>
+        <nav className="mainnav" aria-label="main">
+          <a href="#/" {...current("home")}>
+            Browse
+          </a>
+          <a href="#/upload" {...current("upload")}>
+            Publish
+          </a>
+          <a href="#/log" {...current("log")}>
+            Log
+          </a>
+        </nav>
+        {auth.signedIn ? (
+          <button className="quiet authchip" onClick={() => setAuthOpen(!authOpen)}>
+            ⊙ {auth.displayName}
+          </button>
+        ) : (
+          <button
+            className="secondary authchip"
+            onClick={() => setAuthOpen(!authOpen)}
+          >
+            Sign in
+          </button>
+        )}
         <button
           className="theme-toggle"
           onClick={theme.toggle}
@@ -70,50 +76,36 @@ export default function App() {
         >
           {theme.effective === "dark" ? "☀" : "☾"}
         </button>
-        <div className="cartouche">𓊹</div>
-        <h1>thebes-games</h1>
-        <p className="strap">a canister dapp, live on the Thebes substrate</p>
       </header>
+      <Frieze />
 
-      <MemphisGate auth={auth} />
+      {authOpen && (
+        <div className="authdrawer">
+          <MemphisGate auth={auth} />
+        </div>
+      )}
 
-      <section className="panel">
-        <h2>Query — answered locally, no consensus</h2>
-        <form onSubmit={onGreet}>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder={auth.signedIn ? auth.displayName : "your name"}
-            aria-label="name to greet"
+      <main>
+        {route.name === "home" && <Home />}
+        {route.name === "game" && (
+          <GamePage
+            slug={route.slug}
+            auth={auth}
+            onRequestSignIn={() => setAuthOpen(true)}
           />
-          <button type="submit">Greet</button>
-        </form>
-        {greeting && <p className="reply">{greeting}</p>}
-      </section>
-
-      <section className="panel">
-        <h2>Update — ordered by consensus, finalized on chain</h2>
-        <p className="count">
-          counter:{" "}
-          <strong>
-            {count !== null ? count.toString() : countFailed ? "unavailable" : "…"}
-          </strong>
-        </p>
-        <button onClick={onIncrement} disabled={busy}>
-          {busy ? "finalizing…" : "Increment"}
-        </button>
-        {!auth.signedIn && (
-          <p className="hint">
-            Tip: this starter lets anyone increment. Gate it on{" "}
-            <code>auth.signedIn</code> — and check the session token in your
-            backend — when you want real per-user rules.
-          </p>
         )}
-      </section>
+        {route.name === "upload" && <Upload auth={auth} />}
+        {route.name === "log" && <Log />}
+      </main>
 
-      {error && <p className="error">{error}</p>}
-
-      <footer>served from the chain · post-quantum certified · Thebes</footer>
-    </main>
+      <Frieze />
+      <footer className="colophon">
+        <span>served from the chain · post-quantum certified · Thebes</span>
+        <span>demo catalogue — numbers become real with the registry canister</span>
+        <span>
+          <a href="#/log">transparency log</a> · <a href="#/upload">house rules</a>
+        </span>
+      </footer>
+    </div>
   );
 }

@@ -1,0 +1,1312 @@
+/* Thebes Games — papyrus editorial design system, v2 "stela".
+
+   The house palette (papyrus cream + lapis by day, night blue by dark)
+   matured into a full catalogue design: Fraunces display voice, mono
+   technical voice, hairline borders instead of shadows, and one gold
+   accent reserved for featured/starred things. v2 adds the identity
+   layer: a woven-fiber page texture, a pixel-glyph frieze (the cover-art
+   sprites marching in a band, applied as a CSS mask so it recolors per
+   theme), a cartouche around the wordmark, gold inner frames on the
+   stela panels, and a dark arcade-cabinet chrome around the player.
+   Cover art carries the color; the chrome stays quiet. No gradients,
+   no glass, no neon.
+
+   Theme resolution, in precedence order:
+     1. :root[data-theme="light"|"dark"]  — an explicit choice (useTheme)
+     2. prefers-color-scheme              — the operating system
+     3. the light values below            — the fallback
+   Every colour is a variable — never hardcode a hex in a rule. */
+
+:root {
+  --papyrus: #f6efdd;      /* page background */
+  --papyrus-deep: #ece1c5; /* hairlines, wells */
+  --surface: #fffdf6;      /* card / panel background */
+  --lapis: #1f4e8c;        /* accent, links, buttons */
+  --lapis-deep: #16365f;   /* headings, button hover */
+  --ink: #2b2417;          /* body text */
+  --ink-soft: #6d6353;     /* secondary text */
+  --gold: #b9892a;         /* featured / stars ONLY */
+  --terracotta: #a24a2e;   /* freeze / caution accents */
+  --teal: #2e7d74;         /* rating E */
+  --error: #8c2f1f;
+  --btn-fg: #fffdf6;       /* text on lapis-FILLED controls only */
+  --hardshadow: rgb(31 78 140 / 16%);
+  --goldline: rgb(185 137 42 / 50%);  /* inner frames, cartouche */
+  --fiber: rgb(43 36 23 / 5%);        /* papyrus weave threads */
+  --stone: #101722;                    /* player cabinet — dark in BOTH themes */
+
+  --display: "Fraunces Variable", Georgia, serif;
+  --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --radius: 8px;
+  --radius-sm: 5px;
+  --site-w: 68rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --papyrus: #11161d;
+    --papyrus-deep: #232d3b;
+    --surface: #171e28;
+    --lapis: #7aa7e0;
+    --lapis-deep: #a8c6ee;
+    --ink: #e6e0cf;
+    --ink-soft: #a7afbb;
+    --gold: #d4af5a;
+    --terracotta: #d0785a;
+    --teal: #6fb3a8;
+    --error: #ea8b76;
+    --btn-fg: #11161d;
+    --hardshadow: rgb(122 167 224 / 22%);
+    --goldline: rgb(212 175 90 / 42%);
+    --fiber: rgb(230 224 207 / 4%);
+    --stone: #0b1119;
+  }
+}
+
+:root[data-theme="dark"] {
+  --papyrus: #11161d;
+  --papyrus-deep: #232d3b;
+  --surface: #171e28;
+  --lapis: #7aa7e0;
+  --lapis-deep: #a8c6ee;
+  --ink: #e6e0cf;
+  --ink-soft: #a7afbb;
+  --gold: #d4af5a;
+  --terracotta: #d0785a;
+  --teal: #6fb3a8;
+  --error: #ea8b76;
+  --btn-fg: #11161d;
+  --hardshadow: rgb(122 167 224 / 22%);
+  --goldline: rgb(212 175 90 / 42%);
+  --fiber: rgb(230 224 207 / 4%);
+  --stone: #0b1119;
+}
+
+/* ─── base ─────────────────────────────────────────────────────────── */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: var(--papyrus);
+  /* woven papyrus fibers — a faint two-direction thread weave */
+  background-image: repeating-linear-gradient(
+      90deg,
+      var(--fiber) 0 1px,
+      transparent 1px 6px
+    ),
+    repeating-linear-gradient(0deg, var(--fiber) 0 1px, transparent 1px 11px);
+  color: var(--ink);
+  font-family: var(--serif);
+  line-height: 1.5;
+}
+
+::selection {
+  background: var(--lapis);
+  color: var(--papyrus);
+}
+
+a {
+  color: var(--lapis);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+:focus-visible {
+  outline: 2px solid var(--lapis);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+body,
+.panel,
+.card,
+input,
+textarea,
+select,
+button {
+  transition: background-color 120ms ease, color 120ms ease,
+    border-color 120ms ease;
+}
+
+/* ─── shell ────────────────────────────────────────────────────────── */
+
+.site {
+  max-width: var(--site-w);
+  margin: 0 auto;
+  padding: 1.4rem 1.5rem 2.5rem;
+}
+
+.masthead {
+  display: flex;
+  align-items: center;
+  gap: 1.4rem;
+  padding-bottom: 0.85rem;
+}
+
+/* The pixel-glyph band. The SVG arrives as a mask (set inline by the
+   Frieze component), so background-color IS the glyph color. */
+.frieze {
+  height: 17px;
+  background-color: var(--ink-soft);
+  opacity: 0.4;
+  -webkit-mask-repeat: repeat-x;
+  mask-repeat: repeat-x;
+  -webkit-mask-size: auto 100%;
+  mask-size: auto 100%;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+
+.masthead + .frieze {
+  margin: 0 0 1.7rem;
+}
+
+main + .frieze {
+  margin: 3rem 0 0.6rem;
+}
+
+/* Cartouche: the rounded rope ring royal names are written in, end-bar
+   included. */
+.wordmark {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--ink);
+  white-space: nowrap;
+  border: 1px solid var(--goldline);
+  border-radius: 999px;
+  padding: 0.26rem 0.95rem 0.3rem 0.75rem;
+  position: relative;
+}
+
+.wordmark::after {
+  content: "";
+  position: absolute;
+  top: 22%;
+  bottom: 22%;
+  right: -0.42rem;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--goldline);
+}
+
+.wordmark:hover {
+  text-decoration: none;
+  border-color: var(--gold);
+}
+
+.wordmark .name {
+  font-family: var(--display);
+  font-size: 1.24rem;
+  font-weight: 580;
+  font-variation-settings: "opsz" 40;
+  letter-spacing: 0.01em;
+  color: var(--lapis-deep);
+  transform: translateY(-0.06em);
+}
+
+.mainnav {
+  display: flex;
+  gap: 1.15rem;
+  margin-left: auto;
+  align-items: center;
+}
+
+.mainnav a {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  padding-bottom: 0.2rem;
+}
+
+.mainnav a:hover {
+  color: var(--lapis);
+  text-decoration: none;
+}
+
+.mainnav a[aria-current="page"] {
+  color: var(--lapis);
+  border-bottom: 2px solid var(--lapis);
+}
+
+.masthead .theme-toggle {
+  width: 2.1rem;
+  height: 2.1rem;
+  display: grid;
+  place-items: center;
+  align-self: center;
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+  background: var(--surface);
+  color: var(--lapis);
+  border: 1px solid var(--papyrus-deep);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.masthead .theme-toggle:hover {
+  background: var(--papyrus-deep);
+  color: var(--lapis-deep);
+}
+
+.authchip {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  align-self: center;
+}
+
+.authdrawer {
+  margin: -0.6rem 0 1.6rem;
+}
+
+footer.colophon {
+  margin-top: 0;
+  padding-top: 0.4rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.4rem;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  color: var(--ink-soft);
+}
+
+footer.colophon a {
+  color: var(--ink-soft);
+}
+
+footer.colophon a:hover {
+  color: var(--lapis);
+}
+
+/* ─── buttons & inputs ─────────────────────────────────────────────── */
+
+button,
+.btn {
+  display: inline-block;
+  padding: 0.55rem 1.2rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--lapis);
+  color: var(--btn-fg);
+  font: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+  text-align: center;
+  box-shadow: 0 2px 0 rgb(0 0 0 / 28%);
+}
+
+button:active:not(:disabled),
+.btn:active {
+  transform: translateY(2px);
+  box-shadow: none;
+}
+
+.btn:hover {
+  text-decoration: none;
+}
+
+button:hover:not(:disabled),
+.btn:hover {
+  background: var(--lapis-deep);
+  color: var(--btn-fg);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+button.secondary,
+.btn.secondary {
+  background: transparent;
+  color: var(--lapis);
+  border: 1px solid var(--papyrus-deep);
+  box-shadow: none;
+}
+
+button.secondary:hover:not(:disabled),
+.btn.secondary:hover {
+  background: var(--papyrus-deep);
+  color: var(--lapis-deep);
+}
+
+button.quiet {
+  background: none;
+  border: none;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  padding: 0.3rem 0.4rem;
+  box-shadow: none;
+}
+
+button.quiet:hover:not(:disabled) {
+  background: var(--papyrus-deep);
+  color: var(--ink);
+}
+
+input,
+textarea,
+select {
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--papyrus-deep);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  background: var(--papyrus);
+  color: var(--ink);
+  width: 100%;
+}
+
+textarea {
+  min-height: 7.5rem;
+  resize: vertical;
+}
+
+/* ─── chips ────────────────────────────────────────────────────────── */
+
+.chip {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+  color: var(--ink-soft);
+  border: 1px solid var(--papyrus-deep);
+  border-radius: 999px;
+  padding: 0.12rem 0.55rem;
+  white-space: nowrap;
+}
+
+a.chip:hover,
+button.chip:hover {
+  color: var(--lapis);
+  border-color: var(--lapis);
+  text-decoration: none;
+  background: none;
+}
+
+.chip.rating {
+  text-transform: none;
+  color: var(--ink);
+  border-color: var(--ink-soft);
+}
+
+.chip.rating.e {
+  color: var(--teal);
+  border-color: var(--teal);
+}
+
+.chip.rating.t {
+  color: var(--gold);
+  border-color: var(--gold);
+}
+
+.chip.rating.m {
+  color: var(--terracotta);
+  border-color: var(--terracotta);
+}
+
+.chip.gold {
+  color: var(--gold);
+  border-color: var(--gold);
+}
+
+.chip.caution {
+  color: var(--terracotta);
+  border-color: var(--terracotta);
+}
+
+.chip.on {
+  color: var(--papyrus);
+  background: var(--lapis);
+  border-color: var(--lapis);
+}
+
+button.chip {
+  cursor: pointer;
+  background: none;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  padding: 0.14rem 0.6rem;
+  box-shadow: none;
+}
+
+.chiprow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+/* ─── section heads ────────────────────────────────────────────────── */
+
+.sectionhead {
+  display: flex;
+  align-items: baseline;
+  gap: 0.9rem;
+  margin: 2.1rem 0 1rem;
+}
+
+.sectionhead h2 {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--lapis);
+  white-space: nowrap;
+}
+
+.sectionhead .rule {
+  flex: 1;
+  border-top: 3px double var(--papyrus-deep);
+  transform: translateY(-0.22em);
+}
+
+.sectionhead .more {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+/* ─── hero ─────────────────────────────────────────────────────────── */
+
+.hero {
+  display: grid;
+  grid-template-columns: 1fr 1.05fr;
+  gap: 0;
+  background: var(--surface);
+  border: 1px solid var(--papyrus-deep);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 1px 0 var(--papyrus-deep);
+  position: relative;
+}
+
+/* The stela frame — a gold hairline inset inside the panel border, the
+   way a carved stela carries an inner rule around its field. */
+.hero::after,
+.facts::after {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border: 1px solid var(--goldline);
+  border-radius: 5px;
+  pointer-events: none;
+}
+
+.hero .copy {
+  padding: 1.9rem 2rem 1.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.kicker {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin: 0;
+}
+
+.hero h2 {
+  margin: 0;
+  font-family: var(--display);
+  font-variation-settings: "opsz" 72;
+  font-weight: 570;
+  font-size: clamp(1.9rem, 3.6vw, 2.7rem);
+  line-height: 1.08;
+  letter-spacing: 0;
+  color: var(--lapis-deep);
+}
+
+.hero .tagline {
+  margin: 0;
+  font-size: 1.02rem;
+  color: var(--ink);
+  font-style: italic;
+}
+
+.hero .byline {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}
+
+.hero .actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+}
+
+.hero .artlink {
+  position: relative;
+  display: block;
+  border-left: 1px solid var(--papyrus-deep);
+}
+
+.hero .art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 15rem;
+  object-fit: cover;
+}
+
+/* ─── catalogue grid & cards ───────────────────────────────────────── */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13.5rem, 1fr));
+  gap: 1.15rem;
+}
+
+.card {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--papyrus-deep);
+  border-radius: var(--radius);
+  overflow: hidden;
+  color: var(--ink);
+  box-shadow: 0 1px 0 var(--papyrus-deep);
+}
+
+.card {
+  transition: transform 120ms ease, box-shadow 120ms ease,
+    border-color 120ms ease, background-color 120ms ease;
+}
+
+.card:hover {
+  text-decoration: none;
+  border-color: var(--lapis);
+  transform: translate(-2px, -2px);
+  box-shadow: 5px 5px 0 var(--hardshadow), 0 1px 0 var(--papyrus-deep);
+}
+
+.card .cover {
+  position: relative;
+}
+
+.card .cover img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 5 / 4;
+  object-fit: cover;
+  background: var(--papyrus-deep);
+}
+
+.card:hover .cover img {
+  filter: brightness(1.05);
+}
+
+.card .flag {
+  position: absolute;
+  top: 0.55rem;
+  left: 0.55rem;
+  background: var(--surface);
+}
+
+.playbadge {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.playbadge span {
+  width: 3rem;
+  height: 3rem;
+  border-radius: 50%;
+  background: var(--lapis);
+  color: var(--btn-fg);
+  display: grid;
+  place-items: center;
+  font-size: 1.05rem;
+  box-shadow: 0 2px 0 rgb(0 0 0 / 30%);
+}
+
+.card:hover .playbadge,
+.artlink:hover .playbadge {
+  opacity: 1;
+}
+
+.card .meta {
+  padding: 0.7rem 0.85rem 0.8rem;
+  border-top: 1px solid var(--papyrus-deep);
+}
+
+.card .meta h3 {
+  margin: 0;
+  font-family: var(--display);
+  font-variation-settings: "opsz" 28;
+  font-weight: 540;
+  font-size: 1.06rem;
+  line-height: 1.25;
+  color: var(--lapis-deep);
+}
+
+.card .meta .owner {
+  margin: 0.15rem 0 0.3rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+}
+
+.card .meta .stats {
+  margin: 0 0 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+}
+
+.card.dim .cover img {
+  filter: grayscale(0.7) brightness(0.8);
+}
+
+.card.dim:hover {
+  border-color: var(--terracotta);
+}
+
+/* ─── game page ────────────────────────────────────────────────────── */
+
+.crumb {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  margin: 0 0 1rem;
+}
+
+.gamepage {
+  display: grid;
+  grid-template-columns: 1fr 17rem;
+  gap: 1.4rem;
+  align-items: start;
+}
+
+.gamepage .head {
+  margin: 0 0 0.9rem;
+}
+
+.gamepage .head h1 {
+  margin: 0;
+  font-family: var(--display);
+  font-variation-settings: "opsz" 72;
+  font-weight: 570;
+  font-size: clamp(1.8rem, 3.4vw, 2.5rem);
+  line-height: 1.08;
+  letter-spacing: 0;
+  color: var(--lapis-deep);
+}
+
+.gamepage .head .tagline {
+  margin: 0.35rem 0 0;
+  font-style: italic;
+  color: var(--ink);
+}
+
+.facts {
+  background: var(--surface);
+  border: 1px solid var(--papyrus-deep);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 0 var(--papyrus-deep);
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  position: relative;
+}
+
+.facts dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.3rem 0.8rem;
+  font-size: 0.85rem;
+}
+
+.facts dt {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  align-self: baseline;
+}
+
+.facts dd {
+  margin: 0;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.facts .report {
+  align-self: flex-start;
+}
+
+.prose {
+  max-width: 46rem;
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.prose p {
+  margin: 0.8rem 0;
+}
+
+/* ─── player ───────────────────────────────────────────────────────── */
+
+/* The player is an arcade cabinet set into the papyrus page: dark stone
+   chrome in BOTH themes, a gold hairline around the screen, controls on
+   the stone below it. */
+.player {
+  background: var(--stone);
+  border-radius: var(--radius);
+  padding: 9px;
+  box-shadow: 0 2px 0 rgb(0 0 0 / 30%);
+}
+
+.player .stage {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  background: #0c1016;
+  overflow: hidden;
+  border-radius: 4px;
+  outline: 1px solid var(--goldline);
+  outline-offset: -1px;
+}
+
+.player .stage img.backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.45;
+}
+
+.player .stage .boot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+}
+
+.player .stage .boot button.play {
+  font-size: 1.05rem;
+  padding: 0.75rem 2.2rem;
+}
+
+.player .stage .boot .sandboxnote {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  color: #e6e0cf;
+  background: rgb(12 16 22 / 72%);
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+}
+
+/* The iframe holds the fixed virtual resolution; PlayerShell sets the
+   translate+scale inline to fit (and letterbox in) the stage. */
+.player .stage iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 0;
+  transform-origin: 0 0;
+  background: #0c1016;
+}
+
+/* Loading / error lines over the dark stage — fixed light tones, the
+   stage is near-black in both themes. */
+.player .stage .statusline {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: #e6e0cf;
+}
+
+.player .stage .statusline.iserror {
+  color: #ea8b76;
+}
+
+/* Deck controls sit on the dark stone — fixed light tones, both themes. */
+.player .deck {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.35rem 0.1rem;
+}
+
+.player .deck .spacer {
+  flex: 1;
+}
+
+.player .deck button.quiet {
+  color: #9aa3af;
+}
+
+.player .deck button.quiet:hover:not(:disabled) {
+  background: rgb(255 255 255 / 9%);
+  color: #e6e0cf;
+}
+
+.player .deck .chip {
+  color: #9aa3af;
+  border-color: rgb(255 255 255 / 20%);
+}
+
+.player .deck .standalone {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  color: #7aa7e0;
+}
+
+/* Sign-in / save limitation, stated where the confusion happens. Quiet
+   by default; the ⊙ echoes the header's signed-in chip. */
+.playernote {
+  margin: 0.6rem 0 0;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
+}
+
+.playernote > span[aria-hidden] {
+  color: var(--lapis);
+}
+
+.playernote a {
+  white-space: nowrap;
+}
+
+/* Delegated-sign-in consent — a platform-rendered modal (never in-frame). */
+.consentveil {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: rgb(12 16 22 / 55%);
+}
+
+.consentcard {
+  background: var(--surface);
+  border: 1px solid var(--papyrus-deep);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 28%);
+  padding: 1.5rem 1.6rem;
+  max-width: 27rem;
+  position: relative;
+}
+
+.consentcard::after {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border: 1px solid var(--goldline);
+  border-radius: 5px;
+  pointer-events: none;
+}
+
+.consentcard h3 {
+  margin: 0 0 0.5rem;
+  font-family: var(--display);
+  font-variation-settings: "opsz" 40;
+  font-weight: 560;
+  font-size: 1.3rem;
+  color: var(--lapis-deep);
+}
+
+.consentcard p {
+  margin: 0 0 1.1rem;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.consentcard .row {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.interstitial {
+  border: 1px solid var(--terracotta);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 1.4rem 1.6rem;
+}
+
+.interstitial h2 {
+  margin: 0 0 0.4rem;
+  font-size: 1.15rem;
+  color: var(--terracotta);
+}
+
+.interstitial p {
+  margin: 0.3rem 0;
+  font-size: 0.92rem;
+}
+
+/* ─── empty / pending states ───────────────────────────────────────── */
+
+.emptystate {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--ink-soft);
+}
+
+.emptystate img.pixelglyph {
+  width: 3.4rem;
+  image-rendering: pixelated;
+  opacity: 0.7;
+}
+
+.emptystate p {
+  margin: 0.5rem 0 0;
+}
+
+/* ─── panels (shared with MemphisGate) ─────────────────────────────── */
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--papyrus-deep);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin-bottom: 0.85rem;
+  box-shadow: 0 1px 0 var(--papyrus-deep);
+}
+
+.panel h2 {
+  margin: 0 0 0.65rem;
+  font-size: 0.78rem;
+  font-family: var(--mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--lapis);
+}
+
+.panel form {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.panel.memphis {
+  border-left: 3px solid var(--lapis);
+}
+
+.panel.memphis .who {
+  margin: 0 0 0.65rem;
+  font-size: 1.05rem;
+}
+
+.panel.memphis .tag {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--lapis);
+  opacity: 0.8;
+}
+
+.panel.memphis .row {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.hint {
+  margin: 0.65rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--ink);
+  opacity: 0.7;
+}
+
+.hint code {
+  font-family: var(--mono);
+  background: var(--papyrus-deep);
+  padding: 0.05rem 0.25rem;
+  border-radius: 3px;
+}
+
+.error {
+  color: var(--error);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
+.reply {
+  margin: 1rem 0 0;
+  font-style: italic;
+}
+
+/* ─── upload / publish ─────────────────────────────────────────────── */
+
+.publish {
+  display: grid;
+  grid-template-columns: 1fr 19rem;
+  gap: 1.4rem;
+  align-items: start;
+}
+
+.pagetitle {
+  margin: 0 0 0.3rem;
+  font-family: var(--display);
+  font-variation-settings: "opsz" 60;
+  font-weight: 570;
+  font-size: clamp(1.6rem, 3vw, 2.1rem);
+  letter-spacing: 0;
+  color: var(--lapis-deep);
+}
+
+.pagelede {
+  margin: 0 0 1.4rem;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+.field {
+  margin-bottom: 1rem;
+}
+
+.field label,
+.field .label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 0.35rem;
+}
+
+.field .sub {
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  margin-top: 0.3rem;
+}
+
+.field.slugline code {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  background: var(--papyrus-deep);
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+}
+
+.ratingpick {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.ratingpick label {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  font-family: var(--serif);
+  font-size: 0.92rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.ratingpick input {
+  width: auto;
+  accent-color: var(--lapis);
+}
+
+.ratingpick b {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
+.dropzone {
+  border: 1.5px dashed var(--papyrus-deep);
+  border-radius: var(--radius);
+  padding: 1.3rem 1rem;
+  text-align: center;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.dropzone:hover {
+  border-color: var(--lapis);
+  color: var(--lapis);
+}
+
+.attest {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  font-size: 0.88rem;
+  margin: 1.1rem 0;
+}
+
+.attest input {
+  width: auto;
+  accent-color: var(--lapis);
+}
+
+.houserules h3 {
+  margin: 0.9rem 0 0.3rem;
+  font-size: 0.95rem;
+  color: var(--lapis-deep);
+}
+
+.houserules h3:first-of-type {
+  margin-top: 0.2rem;
+}
+
+.houserules ul,
+.houserules ol {
+  margin: 0.2rem 0 0.6rem;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.houserules li {
+  margin: 0.15rem 0;
+}
+
+.houserules .fine {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+}
+
+/* ─── transparency log ─────────────────────────────────────────────── */
+
+.logtable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--papyrus-deep);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 1px 0 var(--papyrus-deep);
+}
+
+.logtable th {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--ink-soft);
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid var(--papyrus-deep);
+}
+
+.logtable td {
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid var(--papyrus-deep);
+  vertical-align: baseline;
+}
+
+.logtable tr:last-child td {
+  border-bottom: none;
+}
+
+.logtable .when,
+.logtable .actor {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.logtable .why {
+  color: var(--ink);
+}
+
+/* ─── responsive ───────────────────────────────────────────────────── */
+
+@media (max-width: 56rem) {
+  .hero {
+    grid-template-columns: 1fr;
+  }
+
+  .hero .artlink {
+    order: -1;
+    border-left: none;
+    border-bottom: 1px solid var(--papyrus-deep);
+  }
+
+  .hero .art {
+    min-height: 11rem;
+    max-height: 15rem;
+  }
+
+  .gamepage,
+  .publish {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 40rem) {
+  .site {
+    padding: 1rem 1rem 2rem;
+  }
+
+  .masthead {
+    flex-wrap: wrap;
+    gap: 0.6rem 1rem;
+  }
+
+  .mainnav {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+  }
+}
