@@ -87,8 +87,10 @@ persistent actor Backend {
     createdAtNs : Nat64;
     var updatedAtNs : Nat64;
     var finished : Bool; // false while an upload is in flight
-    var plays : Nat;
   };
+  // plays live in a SEPARATE map (playCounts), not a Game field — adding a
+  // field to a record already in stable memory is an incompatible upgrade
+  // (M0170); a new top-level stable var is always safe.
 
   type Cover = { ct : Text; bytes : Blob };
 
@@ -199,6 +201,8 @@ persistent actor Backend {
   let favorites = Map.empty<Text, Set.Set<Blob>>();
   // slug → cover image (served at /g/<slug>/__cover)
   let covers = Map.empty<Text, Cover>();
+  // slug → play count (kept out of the Game record for upgrade safety)
+  let playCounts = Map.empty<Text, Nat>();
 
   // Moderation state.
   var platformOwner : ?Blob = null; // set once via claim_owner (trust-on-first-use)
@@ -273,6 +277,13 @@ persistent actor Backend {
     };
   };
 
+  func playCount(slug : Text) : Nat {
+    switch (Map.get(playCounts, Text.compare, slug)) {
+      case (?n) n;
+      case null 0;
+    };
+  };
+
   func view(g : Game) : GameView {
     {
       slug = g.slug;
@@ -286,7 +297,7 @@ persistent actor Backend {
       sizeBytes = g.sizeBytes;
       updatedAtNs = g.updatedAtNs;
       status = g.status;
-      plays = g.plays;
+      plays = playCount(g.slug);
       favorites = favCount(g.slug);
       cover = switch (Map.get(covers, Text.compare, g.slug)) {
         case (?_) true;
@@ -333,7 +344,6 @@ persistent actor Backend {
           createdAtNs = nowNs;
           var updatedAtNs = nowNs;
           var finished = false;
-          var plays = 0;
         };
         Map.add(games, Text.compare, slug, g);
         Map.add(pending, Text.compare, slug, Map.empty<Text, List.List<Blob>>());
@@ -441,6 +451,7 @@ persistent actor Backend {
             ignore Map.delete(pending, Text.compare, slug);
             ignore Map.delete(favorites, Text.compare, slug);
             ignore Map.delete(covers, Text.compare, slug);
+            ignore Map.delete(playCounts, Text.compare, slug);
             #ok;
           };
         };
@@ -453,7 +464,7 @@ persistent actor Backend {
   // Bump the play counter (public — opening a game records a play).
   public shared func record_play(slug : Text) : async () {
     switch (Map.get(games, Text.compare, slug)) {
-      case (?g) { g.plays += 1 };
+      case (?_) { Map.add(playCounts, Text.compare, slug, playCount(slug) + 1) };
       case null {};
     };
   };
@@ -908,7 +919,6 @@ persistent actor Backend {
       createdAtNs = 0;
       var updatedAtNs = 0;
       var finished = true;
-      var plays = 0;
     };
     Map.add(games, Text.compare, slug, g);
   };
