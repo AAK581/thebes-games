@@ -221,10 +221,12 @@ persistent actor Backend {
   // 256 MB / game: heap-bound (all vault bytes live in the canister's heap
   // during operation), so at scale the vault shards into multiple canisters.
   transient let MAX_GAME_BYTES : Nat = 256 * 1024 * 1024;
-  // ~2.9 MB / file: a file is served whole in ONE http_request response, and
-  // that response is bounded by the query-response ceiling (the Thebes boundary
-  // has no streaming-callback path). Bigger single files need boundary streaming.
-  transient let MAX_FILE_BYTES : Nat = 3_000_000;
+  // Game files are served via the streaming-callback path (http_request +
+  // http_request_streaming_callback), so a single file is bounded only by the
+  // per-game total — no per-file serving ceiling. Covers are served inline in
+  // one response, so they keep a small cap.
+  transient let MAX_COVER_BYTES : Nat = 3_000_000;
+  transient let SERVE_CHUNK : Nat = 1_900_000; // bytes per streamed response chunk
   transient let MAX_FILES : Nat = 4096;
   transient let MAX_CHUNK_BYTES : Nat = 64 * 1024; // one put_chunk
 
@@ -420,11 +422,10 @@ persistent actor Backend {
                 // Assemble each file once.
                 let assembled = Map.empty<Text, Blob>();
                 for ((path, chunks) in Map.entries(pf)) {
-                  let bytes = concatBlobs(chunks);
-                  if (Blob.size(bytes) > MAX_FILE_BYTES) {
-                    return #err ("file too large — ~3 MB per-file serving cap: " # path);
-                  };
-                  Map.add(assembled, Text.compare, path, bytes);
+                  // No per-file cap: files are served via the streaming
+                  // callback, bounded only by the per-game total already
+                  // enforced at put_chunk time.
+                  Map.add(assembled, Text.compare, path, concatBlobs(chunks));
                 };
                 Map.add(files, Text.compare, slug, assembled);
                 ignore Map.delete(pending, Text.compare, slug);
@@ -545,7 +546,7 @@ persistent actor Backend {
           case null { #err "no such game" };
           case (?g) {
             if (g.ownerAnchor != s.anchor) return #err "not your game";
-            if (Blob.size(bytes) > MAX_FILE_BYTES) return #err "cover too large (~3 MB max)";
+            if (Blob.size(bytes) > MAX_COVER_BYTES) return #err "cover too large (~3 MB max)";
             Map.add(covers, Text.compare, slug, { ct; bytes });
             #ok;
           };
@@ -832,10 +833,25 @@ persistent actor Backend {
     headers : [HeaderField];
     body : Blob;
   };
+
+  // Streaming (docs: large-file serving). A file bigger than one response is
+  // returned as the first chunk inline plus a token the NODE follows via
+  // http_request_streaming_callback (the engine can't self-call a query). The
+  // token is our own small record — round-trips cleanly through the engine's
+  // opaque-token path.
+  type StreamingToken = { slug : Text; path : Text; index : Nat };
+  type StreamingCallbackResponse = { body : Blob; token : ?StreamingToken };
+  type StreamingStrategy = {
+    #Callback : {
+      token : StreamingToken;
+      callback : shared query (StreamingToken) -> async StreamingCallbackResponse;
+    };
+  };
   type HttpResponse = {
     status_code : Nat16;
     headers : [HeaderField];
     body : Blob;
+    streaming_strategy : ?StreamingStrategy;
   };
 
   func notFound(msg : Text) : HttpResponse {
@@ -843,6 +859,41 @@ persistent actor Backend {
       status_code = 404;
       headers = [("content-type", "text/plain; charset=utf-8")];
       body = Text.encodeUtf8(msg);
+      streaming_strategy = null;
+    };
+  };
+
+  // The `index`-th SERVE_CHUNK-sized slice of `bytes`.
+  func chunkOf(bytes : Blob, index : Nat) : Blob {
+    let arr = Blob.toArray(bytes);
+    let start = index * SERVE_CHUNK;
+    if (start >= arr.size()) return Blob.fromArray([]);
+    let end = Nat.min(start + SERVE_CHUNK, arr.size());
+    Blob.fromArray(Array.sliceToArray(arr, start, end));
+  };
+
+  // A response for a stored file: inline when it fits one response, else the
+  // first chunk + a streaming strategy the node follows for the rest.
+  func serveBytes(slug : Text, path : Text, ct : Text, bytes : Blob) : HttpResponse {
+    let headers = [
+      ("content-type", ct),
+      ("access-control-allow-origin", "*"),
+      ("cache-control", "public, max-age=60"),
+    ];
+    if (Blob.size(bytes) <= SERVE_CHUNK) {
+      { status_code = 200; headers; body = bytes; streaming_strategy = null };
+    } else {
+      {
+        status_code = 200;
+        headers;
+        body = chunkOf(bytes, 0);
+        streaming_strategy = ?(
+          #Callback {
+            token = { slug; path; index = 1 };
+            callback = http_request_streaming_callback;
+          }
+        );
+      };
     };
   };
 
@@ -877,6 +928,7 @@ persistent actor Backend {
               ("cache-control", "public, max-age=300"),
             ];
             body = c.bytes;
+            streaming_strategy = null;
           };
         };
         case null { return notFound("no cover for '" # slug # "'") };
@@ -886,20 +938,33 @@ persistent actor Backend {
       case null { notFound("no game '" # slug # "' in the vault") };
       case (?fm) {
         switch (Map.get(fm, Text.compare, file)) {
+          case (?bytes) { serveBytes(slug, file, contentType(file), bytes) };
+          case null { notFound("no file '" # file # "' in '" # slug # "'") };
+        };
+      };
+    };
+  };
+
+  // The node follows this to fetch the next chunk of a big file (see the
+  // streaming strategy in serveBytes). Serves only public vault bytes — the
+  // same bytes http_request already serves, so no new exposure.
+  public query func http_request_streaming_callback(token : StreamingToken) : async StreamingCallbackResponse {
+    switch (Map.get(files, Text.compare, token.slug)) {
+      case null { { body = Blob.fromArray([]); token = null } };
+      case (?fm) {
+        switch (Map.get(fm, Text.compare, token.path)) {
+          case null { { body = Blob.fromArray([]); token = null } };
           case (?bytes) {
+            let more = (token.index + 1) * SERVE_CHUNK < Blob.size(bytes);
             {
-              status_code = 200;
-              headers = [
-                ("content-type", contentType(file)),
-                // Opaque-origin players fetch cross-origin; allow it (the
-                // gateway does the same for canister assets).
-                ("access-control-allow-origin", "*"),
-                ("cache-control", "public, max-age=60"),
-              ];
-              body = bytes;
+              body = chunkOf(bytes, token.index);
+              token = if (more) ?{
+                slug = token.slug;
+                path = token.path;
+                index = token.index + 1;
+              } else null;
             };
           };
-          case null { notFound("no file '" # file # "' in '" # slug # "'") };
         };
       };
     };

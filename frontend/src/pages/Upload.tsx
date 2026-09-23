@@ -13,8 +13,10 @@ import { beginPublish, putChunk, finishPublish, setCover } from "../registry";
 // Honor the substrate's ~32 KiB chunk discipline, with headroom for the
 // Candid framing (token + slug + path) around the bytes.
 const CHUNK = 32 * 1000;
-const MAX_FILE = 3_000_000; // ~2.9 MB — the per-file serving ceiling (no streaming)
+// No separate per-file cap — files are served via the streaming callback, so a
+// single file is bounded only by the per-game total.
 const MAX_TOTAL = 256 * 1024 * 1024; // 256 MB / game
+const MAX_FILE = MAX_TOTAL;
 const MAX_FILES = 4096;
 
 function slugify(title: string): string {
@@ -56,7 +58,7 @@ function validate(files: Record<string, Uint8Array>) {
   if (entries.length > MAX_FILES) throw new Error(`too many files (${MAX_FILES} max)`);
   let total = 0;
   for (const [p, b] of entries) {
-    if (b.length > MAX_FILE) throw new Error(`"${p}" is over the ~3 MB per-file cap`);
+    if (b.length > MAX_FILE) throw new Error(`"${p}" is over the 256 MB cap`);
     total += b.length;
   }
   if (total > MAX_TOTAL) throw new Error("the bundle is over 256 MB");
@@ -276,7 +278,7 @@ export default function Upload({
 
           <div className="field">
             <span className="label">
-              Game bundle — .zip with index.html at root · 256 MB cap, ~3 MB/file
+              Game bundle — .zip with index.html at root · 256 MB cap · big files streamed
             </span>
             <label className="dropzone">
               <input
