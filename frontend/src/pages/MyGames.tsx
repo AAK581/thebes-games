@@ -6,9 +6,14 @@ import { useEffect, useState } from "react";
 import type { MemphisAuth } from "../useMemphis";
 import type { Game } from "../data";
 import { myGames, unpublish } from "../registry";
-import MemphisGate from "../MemphisGate";
 
-export default function MyGames({ auth }: { auth: MemphisAuth }) {
+export default function MyGames({
+  auth,
+  onRequestSignIn,
+}: {
+  auth: MemphisAuth;
+  onRequestSignIn: () => void;
+}) {
   const token = auth.session?.session_token_hex;
   const [games, setGames] = useState<Game[] | null>(null);
   const [msg, setMsg] = useState("");
@@ -47,8 +52,12 @@ export default function MyGames({ auth }: { auth: MemphisAuth }) {
     return (
       <>
         <h1 className="pagetitle">My games</h1>
-        <p className="pagelede">Sign in to see and manage your uploads.</p>
-        <MemphisGate auth={auth} />
+        <p className="pagelede">
+          Sign in to see and manage your uploads.{" "}
+          <button className="quiet" onClick={onRequestSignIn}>
+            Sign in
+          </button>
+        </p>
       </>
     );
   }

@@ -218,9 +218,14 @@ persistent actor Backend {
   transient let SUSPEND_STRIKES : Nat = 3; // publishing blocked at this many strikes
 
   // Limits (MVP; documented, not stubs).
-  transient let MAX_GAME_BYTES : Nat = 16 * 1024 * 1024; // 16 MB / game
-  transient let MAX_FILE_BYTES : Nat = 2 * 1024 * 1024; // 2 MB / file (served whole; no streaming)
-  transient let MAX_FILES : Nat = 512;
+  // 256 MB / game: heap-bound (all vault bytes live in the canister's heap
+  // during operation), so at scale the vault shards into multiple canisters.
+  transient let MAX_GAME_BYTES : Nat = 256 * 1024 * 1024;
+  // ~2.9 MB / file: a file is served whole in ONE http_request response, and
+  // that response is bounded by the query-response ceiling (the Thebes boundary
+  // has no streaming-callback path). Bigger single files need boundary streaming.
+  transient let MAX_FILE_BYTES : Nat = 3_000_000;
+  transient let MAX_FILES : Nat = 4096;
   transient let MAX_CHUNK_BYTES : Nat = 64 * 1024; // one put_chunk
 
   // ─── Helpers ───────────────────────────────────────────────────────────
@@ -367,14 +372,14 @@ persistent actor Backend {
             if (g.ownerAnchor != s.anchor) return #err "not your game";
             if (g.finished) return #err "already published";
             if (Blob.size(chunk) > MAX_CHUNK_BYTES) return #err "chunk too large (64 KiB max)";
-            if (g.sizeBytes + Blob.size(chunk) > MAX_GAME_BYTES) return #err "game exceeds 16 MB";
+            if (g.sizeBytes + Blob.size(chunk) > MAX_GAME_BYTES) return #err "game exceeds the 256 MB cap";
             switch (Map.get(pending, Text.compare, slug)) {
               case null { return #err "upload not open" };
               case (?pf) {
                 let chunks = switch (Map.get(pf, Text.compare, path)) {
                   case (?c) c;
                   case null {
-                    if (Map.size(pf) >= MAX_FILES) return #err "too many files (512 max)";
+                    if (Map.size(pf) >= MAX_FILES) return #err "too many files (4096 max)";
                     let c = List.empty<Blob>();
                     Map.add(pf, Text.compare, path, c);
                     c;
@@ -417,7 +422,7 @@ persistent actor Backend {
                 for ((path, chunks) in Map.entries(pf)) {
                   let bytes = concatBlobs(chunks);
                   if (Blob.size(bytes) > MAX_FILE_BYTES) {
-                    return #err ("file too large (2 MB max): " # path);
+                    return #err ("file too large — ~3 MB per-file serving cap: " # path);
                   };
                   Map.add(assembled, Text.compare, path, bytes);
                 };
@@ -540,7 +545,7 @@ persistent actor Backend {
           case null { #err "no such game" };
           case (?g) {
             if (g.ownerAnchor != s.anchor) return #err "not your game";
-            if (Blob.size(bytes) > MAX_FILE_BYTES) return #err "cover over 2 MB";
+            if (Blob.size(bytes) > MAX_FILE_BYTES) return #err "cover too large (~3 MB max)";
             Map.add(covers, Text.compare, slug, { ct; bytes });
             #ok;
           };

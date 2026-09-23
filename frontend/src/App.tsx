@@ -88,8 +88,12 @@ export default function App() {
             onRequestSignIn={() => setAuthOpen(true)}
           />
         )}
-        {route.name === "upload" && <Upload auth={auth} />}
-        {route.name === "mine" && <MyGames auth={auth} />}
+        {route.name === "upload" && (
+          <Upload auth={auth} onRequestSignIn={() => setAuthOpen(true)} />
+        )}
+        {route.name === "mine" && (
+          <MyGames auth={auth} onRequestSignIn={() => setAuthOpen(true)} />
+        )}
         {route.name === "log" && <Log auth={auth} />}
       </main>
 

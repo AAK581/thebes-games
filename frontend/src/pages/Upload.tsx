@@ -7,16 +7,15 @@
 import { useState } from "react";
 import { unzipSync } from "fflate";
 import type { MemphisAuth } from "../useMemphis";
-import MemphisGate from "../MemphisGate";
 import type { Rating } from "../data";
 import { beginPublish, putChunk, finishPublish, setCover } from "../registry";
 
 // Honor the substrate's ~32 KiB chunk discipline, with headroom for the
 // Candid framing (token + slug + path) around the bytes.
 const CHUNK = 32 * 1000;
-const MAX_FILE = 2 * 1024 * 1024;
-const MAX_TOTAL = 16 * 1024 * 1024;
-const MAX_FILES = 512;
+const MAX_FILE = 3_000_000; // ~2.9 MB — the per-file serving ceiling (no streaming)
+const MAX_TOTAL = 256 * 1024 * 1024; // 256 MB / game
+const MAX_FILES = 4096;
 
 function slugify(title: string): string {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -57,15 +56,21 @@ function validate(files: Record<string, Uint8Array>) {
   if (entries.length > MAX_FILES) throw new Error(`too many files (${MAX_FILES} max)`);
   let total = 0;
   for (const [p, b] of entries) {
-    if (b.length > MAX_FILE) throw new Error(`"${p}" is over 2 MB (per-file cap)`);
+    if (b.length > MAX_FILE) throw new Error(`"${p}" is over the ~3 MB per-file cap`);
     total += b.length;
   }
-  if (total > MAX_TOTAL) throw new Error("the bundle is over 16 MB");
+  if (total > MAX_TOTAL) throw new Error("the bundle is over 256 MB");
 }
 
 type Phase = "idle" | "working" | "done" | "error";
 
-export default function Upload({ auth }: { auth: MemphisAuth }) {
+export default function Upload({
+  auth,
+  onRequestSignIn,
+}: {
+  auth: MemphisAuth;
+  onRequestSignIn: () => void;
+}) {
   const [title, setTitle] = useState("");
   const [taglineText, setTaglineText] = useState("");
   const [description, setDescription] = useState("");
@@ -170,13 +175,13 @@ export default function Upload({ auth }: { auth: MemphisAuth }) {
       <div className="publish">
         <div>
           {!auth.signedIn && (
-            <>
-              <p className="hint">
-                Publishing requires a Memphis passkey identity — your games are
-                owned by your anchor, on chain.
-              </p>
-              <MemphisGate auth={auth} />
-            </>
+            <p className="hint">
+              Publishing requires a Memphis passkey identity — your games are
+              owned by your anchor, on chain.{" "}
+              <button className="quiet" onClick={onRequestSignIn}>
+                Sign in
+              </button>
+            </p>
           )}
 
           <div className="field">
@@ -271,7 +276,7 @@ export default function Upload({ auth }: { auth: MemphisAuth }) {
 
           <div className="field">
             <span className="label">
-              Game bundle — .zip with index.html at root · 16 MB cap, 2 MB/file
+              Game bundle — .zip with index.html at root · 256 MB cap, ~3 MB/file
             </span>
             <label className="dropzone">
               <input
@@ -332,9 +337,6 @@ export default function Upload({ auth }: { auth: MemphisAuth }) {
             </div>
           )}
           {phase === "error" && <p className="error">Publish failed — {error}</p>}
-          {!auth.signedIn && (
-            <p className="hint">Sign in above to publish.</p>
-          )}
         </div>
 
         <aside className="panel houserules">
