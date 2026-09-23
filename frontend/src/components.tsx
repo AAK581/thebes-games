@@ -7,6 +7,7 @@ import type { Game } from "./data";
 import type { MemphisAuth } from "./useMemphis";
 import { useDelegationBridge } from "./useDelegationBridge";
 import type { ConsentRequest } from "./useDelegationBridge";
+import { VAULT_CID } from "./registry";
 import { coverFor, friezeURI } from "./cover";
 
 /** Step pyramid + sun — inline SVG because unicode hieroglyphs render
@@ -200,7 +201,14 @@ export function PlayerShell({
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [fit, setFit] = useState({ scale: 0, x: 0, y: 0 });
-  const src = game.cid ? `/_/raw/${game.cid}/index.html` : null;
+  // Where the game's files live: the platform vault (uploaded) at
+  // /_/raw/<vault>/g/<slug>/, or the game's own canister at /_/raw/<cid>/.
+  const gamePath = game.vaultSlug
+    ? `/_/raw/${VAULT_CID}/g/${game.vaultSlug}/`
+    : game.cid
+      ? `/_/raw/${game.cid}/`
+      : null;
+  const src = gamePath ? `${gamePath}index.html` : null;
 
   // Memphis delegated sign-in (dormant unless window.THEBES_DELEGATION).
   // Answers the game SDK's handshake while the game is running; returns a
@@ -235,15 +243,15 @@ export function PlayerShell({
   }, []);
 
   async function boot() {
-    if (!src || !game.cid) return;
+    if (!src || !gamePath) return;
     setPhase("loading");
     try {
       const r = await fetch(src, { cache: "no-store" });
       if (!r.ok) throw new Error(`gateway answered ${r.status}`);
       // Absolute base — see wrapGameHtml. window.location.origin is the
       // dev host under `npm run dev` (assets proxy through /_) and the
-      // gateway origin in production; both make /_/raw/<cid>/ resolve.
-      const base = `${window.location.origin}/_/raw/${game.cid}/`;
+      // gateway origin in production; both make the game path resolve.
+      const base = `${window.location.origin}${gamePath}`;
       setDoc(wrapGameHtml(await r.text(), base));
       setPhase("running");
     } catch (e) {

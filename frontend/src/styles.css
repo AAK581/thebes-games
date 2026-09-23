@@ -1128,6 +1128,7 @@ button.chip {
 }
 
 .dropzone {
+  display: block;
   border: 1.5px dashed var(--papyrus-deep);
   border-radius: var(--radius);
   padding: 1.3rem 1rem;
@@ -1140,6 +1141,37 @@ button.chip {
 .dropzone:hover {
   border-color: var(--lapis);
   color: var(--lapis);
+}
+
+/* upload progress + published state */
+.uploadprogress {
+  margin-top: 0.9rem;
+}
+
+.uploadprogress .bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--papyrus-deep);
+  overflow: hidden;
+}
+
+.uploadprogress .bar span {
+  display: block;
+  height: 100%;
+  background: var(--carnelian);
+  transition: width 160ms ease;
+}
+
+.publishdone {
+  text-align: center;
+  padding: 2.5rem 1rem;
+}
+
+.publishdone .actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: center;
+  margin-top: 1.2rem;
 }
 
 .attest {

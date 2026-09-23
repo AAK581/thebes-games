@@ -302,3 +302,62 @@ async function pollReceipt(hashHex: string): Promise<string | bigint> {
   }
   throw new Error("timed out waiting for the chain's receipt");
 }
+
+// ─── raw variants ─────────────────────────────────────────────────────
+//
+// The typed helpers above decode primitive replies. The registry speaks
+// compound Candid (records / variants / vec / blob), so registry.ts encodes
+// args and decodes replies with @dfinity/candid and moves the bytes through
+// these raw call/query paths (same retry / nonce / receipt discipline).
+
+/** Query returning the raw reply hex (undecoded). */
+export async function queryRaw(method: string, argHex: string): Promise<string> {
+  const j = await fetchWithRetry(`${BASE}/api/query`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      canister_id: BACKEND_CANISTER_ID,
+      method,
+      arg: argHex,
+      sender: demoSender(),
+    }),
+  });
+  if (j.status !== "success") throw new Error(j.error || "query failed");
+  return j.reply || "";
+}
+
+async function pollReceiptRaw(hashHex: string): Promise<string> {
+  const deadline = Date.now() + 30_000;
+  let transientPolls = 0;
+  while (Date.now() < deadline) {
+    try {
+      const j = await fetchWithRetry(`${BASE}/api/receipt?hash=${hashHex}`);
+      if (j.found) {
+        if (j.status === "success") return j.reply || "";
+        throw new Error(j.error || "call failed on chain");
+      }
+    } catch (e) {
+      if (++transientPolls > 10) throw e;
+    }
+    await new Promise((res) => setTimeout(res, 500));
+  }
+  throw new Error("timed out waiting for the chain's receipt");
+}
+
+/** Update returning the raw receipt reply hex (undecoded). */
+export async function callRaw(method: string, argHex: string): Promise<string> {
+  const sender = demoSender();
+  const nj = await fetchWithRetry(`${BASE}/api/next_nonce?sender=${sender}`, {
+    cache: "no-store",
+  });
+  if (typeof nj.next_nonce !== "number") throw new Error("malformed next_nonce reply");
+
+  let j = await submitCall(method, argHex, sender, nj.next_nonce);
+  if (!j.queued && typeof j.error === "string" && /nonce .* already used/i.test(j.error)) {
+    const m = j.error.match(/last seen:\s*(\d+)/i);
+    const recovered = m ? Number(m[1]) + 1 : nj.next_nonce + 1;
+    j = await submitCall(method, argHex, sender, recovered);
+  }
+  if (!j.queued || !j.message_hash) throw new Error(j.error || "call rejected");
+  return pollReceiptRaw(j.message_hash);
+}

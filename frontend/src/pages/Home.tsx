@@ -4,14 +4,16 @@
  * only on their own page (as an interstitial) and in the public log.
  */
 import { useState } from "react";
-import { GAMES, allTags } from "../data";
 import { GameCard, SectionHead } from "../components";
 import { coverFor, spriteURI } from "../cover";
+import { useCatalogue } from "../useCatalogue";
 
 export default function Home() {
   const [tag, setTag] = useState<string | null>(null);
+  const { games } = useCatalogue();
 
-  const visible = GAMES.filter((g) => g.status === "live");
+  const visible = games.filter((g) => g.status === "live");
+  const tags = Array.from(new Set(visible.flatMap((g) => g.tags))).sort();
   const hero = visible.find((g) => g.featured) ?? visible[0];
   const catalogue = visible
     .filter((g) => (tag ? g.tags.includes(tag) : true))
@@ -58,7 +60,7 @@ export default function Home() {
         >
           all
         </button>
-        {allTags().map((t) => (
+        {tags.map((t) => (
           <button
             key={t}
             className={tag === t ? "chip on" : "chip"}

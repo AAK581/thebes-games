@@ -32,6 +32,13 @@ export interface Game {
   /** Frontend canister id of a live on-chain build, when one exists. */
   cid?: string;
   /**
+   * Vault slug, when the game's bytes are hosted by the platform's vault
+   * (uploaded via Publish) rather than living in their own canister. The
+   * player serves it from /_/raw/<VAULT_CID>/g/<vaultSlug>/. Mutually
+   * exclusive with `cid` in practice.
+   */
+  vaultSlug?: string;
+  /**
    * Backend canister id, when the game has one. This is the AUDIENCE a
    * Memphis delegated session is scoped to (docs/memphis-delegated-sessions.md,
    * §11.1): the platform mints a token only that canister can resolve. Until

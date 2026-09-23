@@ -2,7 +2,9 @@
  * Game — a single game's page: the sandboxed player (or the quarantine
  * interstitial), the description, and the on-chain facts rail.
  */
-import { gameBySlug } from "../data";
+import { useEffect, useState } from "react";
+import { gameBySlug, type Game } from "../data";
+import { getGame } from "../registry";
 import { PlayerShell, RatingChip } from "../components";
 import { spriteURI } from "../cover";
 import type { MemphisAuth } from "../useMemphis";
@@ -16,7 +18,32 @@ export default function GamePage({
   auth: MemphisAuth;
   onRequestSignIn: () => void;
 }) {
-  const game = gameBySlug(slug);
+  // undefined = loading, null = not found. Prefer the chain; on a network
+  // error (e.g. the registry isn't deployed yet) fall back to the mock.
+  const [game, setGame] = useState<Game | null | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    setGame(undefined);
+    getGame(slug)
+      .then((g) => {
+        if (alive) setGame(g);
+      })
+      .catch(() => {
+        if (alive) setGame(gameBySlug(slug) ?? null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [slug]);
+
+  if (game === undefined) {
+    return (
+      <div className="emptystate">
+        <img className="pixelglyph" src={spriteURI("scarab")} alt="" />
+        <p>Loading from the chain…</p>
+      </div>
+    );
+  }
 
   if (!game) {
     return (
