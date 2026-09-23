@@ -21,6 +21,7 @@
 // Upgrades keep state: `persistent actor` + `--legacy-persistence` (thebes.toml).
 
 import Map "mo:core/Map";
+import Set "mo:core/Set";
 import List "mo:core/List";
 import Text "mo:core/Text";
 import Blob "mo:core/Blob";
@@ -65,6 +66,9 @@ persistent actor Backend {
     sizeBytes : Nat;
     updatedAtNs : Nat64;
     status : Status;
+    plays : Nat;
+    favorites : Nat;
+    cover : Bool; // true when the creator uploaded a cover image
   };
 
   // The stored record.
@@ -83,6 +87,39 @@ persistent actor Backend {
     createdAtNs : Nat64;
     var updatedAtNs : Nat64;
     var finished : Bool; // false while an upload is in flight
+    var plays : Nat;
+  };
+
+  type Cover = { ct : Text; bytes : Blob };
+
+  // ─── Moderation ────────────────────────────────────────────────────────
+  type Verdict = { #restore; #delist };
+  type CaseKind = { #reports; #emergency };
+  type ModCase = {
+    id : Nat;
+    slug : Text;
+    kind : CaseKind;
+    openedAtNs : Nat64;
+    // curator anchor → their vote (last one wins)
+    votes : Map.Map<Blob, Verdict>;
+    var resolved : ?Verdict;
+  };
+  type LogEntry = {
+    atNs : Nat64;
+    action : Text; // report | quarantine | emergency-freeze | vote | restore | delist | strike
+    target : Text; // slug
+    who : Text; // display name of who acted (`actor` is a reserved word)
+    detail : Text;
+    caseId : Nat; // 0 when not tied to a case
+  };
+  type CaseView = {
+    id : Nat;
+    slug : Text;
+    kind : Text;
+    openedAtNs : Nat64;
+    restoreVotes : Nat;
+    delistVotes : Nat;
+    resolved : ?Text;
   };
 
   // ─── Memphis auth (verify a session token → anchor) ────────────────────
@@ -158,6 +195,23 @@ persistent actor Backend {
   let files = Map.empty<Text, Map.Map<Text, Blob>>();
   // slug → (path → chunks in order), for uploads in flight
   let pending = Map.empty<Text, Map.Map<Text, List.List<Blob>>>();
+  // slug → set of anchors that favorited it
+  let favorites = Map.empty<Text, Set.Set<Blob>>();
+  // slug → cover image (served at /g/<slug>/__cover)
+  let covers = Map.empty<Text, Cover>();
+
+  // Moderation state.
+  var platformOwner : ?Blob = null; // set once via claim_owner (trust-on-first-use)
+  let curators = Set.empty<Blob>(); // curator anchors (the owner is one)
+  let reports = Map.empty<Text, Set.Set<Blob>>(); // slug → distinct reporter anchors
+  var caseSeq : Nat = 0;
+  let cases = Map.empty<Nat, ModCase>();
+  let strikes = Map.empty<Blob, Nat>(); // anchor → strike count
+  let modLog = List.empty<LogEntry>();
+
+  transient let QUARANTINE_THRESHOLD : Nat = 3; // distinct reporters → auto-quarantine
+  transient let PANEL_MAJORITY : Nat = 2; // curator votes to resolve a case
+  transient let SUSPEND_STRIKES : Nat = 3; // publishing blocked at this many strikes
 
   // Limits (MVP; documented, not stubs).
   transient let MAX_GAME_BYTES : Nat = 16 * 1024 * 1024; // 16 MB / game
@@ -212,6 +266,13 @@ persistent actor Backend {
     if (ends ".html" or ends ".htm") "text/html; charset=utf-8" else if (ends ".js" or ends ".mjs") "text/javascript; charset=utf-8" else if (ends ".css") "text/css; charset=utf-8" else if (ends ".json") "application/json; charset=utf-8" else if (ends ".wasm") "application/wasm" else if (ends ".png") "image/png" else if (ends ".jpg" or ends ".jpeg") "image/jpeg" else if (ends ".gif") "image/gif" else if (ends ".svg") "image/svg+xml" else if (ends ".webp") "image/webp" else if (ends ".ico") "image/x-icon" else if (ends ".woff2") "font/woff2" else if (ends ".woff") "font/woff" else if (ends ".ttf") "font/ttf" else if (ends ".otf") "font/otf" else if (ends ".mp3") "audio/mpeg" else if (ends ".ogg" or ends ".oga") "audio/ogg" else if (ends ".wav") "audio/wav" else if (ends ".mp4") "video/mp4" else if (ends ".webm") "video/webm" else if (ends ".txt") "text/plain; charset=utf-8" else "application/octet-stream";
   };
 
+  func favCount(slug : Text) : Nat {
+    switch (Map.get(favorites, Text.compare, slug)) {
+      case (?s) Set.size(s);
+      case null 0;
+    };
+  };
+
   func view(g : Game) : GameView {
     {
       slug = g.slug;
@@ -225,6 +286,12 @@ persistent actor Backend {
       sizeBytes = g.sizeBytes;
       updatedAtNs = g.updatedAtNs;
       status = g.status;
+      plays = g.plays;
+      favorites = favCount(g.slug);
+      cover = switch (Map.get(covers, Text.compare, g.slug)) {
+        case (?_) true;
+        case null false;
+      };
     };
   };
 
@@ -245,6 +312,9 @@ persistent actor Backend {
     switch (await* authed(token)) {
       case null { #err "not signed in — a valid Memphis session is required" };
       case (?s) {
+        if (strikeCount(s.anchor) >= SUSPEND_STRIKES) {
+          return #err "publishing suspended — too many strikes";
+        };
         if (Text.size(meta.title) == 0) return #err "title is required";
         let slug = uniqueSlug(slugify(meta.title));
         let nowNs = Nat64.fromNat(Int.abs(Time.now()));
@@ -263,6 +333,7 @@ persistent actor Backend {
           createdAtNs = nowNs;
           var updatedAtNs = nowNs;
           var finished = false;
+          var plays = 0;
         };
         Map.add(games, Text.compare, slug, g);
         Map.add(pending, Text.compare, slug, Map.empty<Text, List.List<Blob>>());
@@ -368,11 +439,355 @@ persistent actor Backend {
             ignore Map.delete(games, Text.compare, slug);
             ignore Map.delete(files, Text.compare, slug);
             ignore Map.delete(pending, Text.compare, slug);
+            ignore Map.delete(favorites, Text.compare, slug);
+            ignore Map.delete(covers, Text.compare, slug);
             #ok;
           };
         };
       };
     };
+  };
+
+  // ─── Engagement + manage ───────────────────────────────────────────────
+
+  // Bump the play counter (public — opening a game records a play).
+  public shared func record_play(slug : Text) : async () {
+    switch (Map.get(games, Text.compare, slug)) {
+      case (?g) { g.plays += 1 };
+      case null {};
+    };
+  };
+
+  // Toggle the caller's favorite for a game; returns the new state.
+  public shared func toggle_favorite(token : Blob, slug : Text) : async {
+    #ok : Bool;
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { #err "not signed in" };
+      case (?s) {
+        switch (Map.get(games, Text.compare, slug)) {
+          case null { #err "no such game" };
+          case (?_) {
+            let set = switch (Map.get(favorites, Text.compare, slug)) {
+              case (?x) x;
+              case null {
+                let x = Set.empty<Blob>();
+                Map.add(favorites, Text.compare, slug, x);
+                x;
+              };
+            };
+            if (Set.contains(set, Blob.compare, s.anchor)) {
+              ignore Set.delete(set, Blob.compare, s.anchor);
+              #ok false;
+            } else {
+              Set.add(set, Blob.compare, s.anchor);
+              #ok true;
+            };
+          };
+        };
+      };
+    };
+  };
+
+  // Has the caller favorited this game? (auth so it stays per-anchor private.)
+  public shared func is_favorite(token : Blob, slug : Text) : async Bool {
+    switch (await* authed(token)) {
+      case null false;
+      case (?s) {
+        switch (Map.get(favorites, Text.compare, slug)) {
+          case (?set) Set.contains(set, Blob.compare, s.anchor);
+          case null false;
+        };
+      };
+    };
+  };
+
+  // The caller's own games (any status), for the manage page.
+  public shared func my_games(token : Blob) : async [GameView] {
+    switch (await* authed(token)) {
+      case null { [] };
+      case (?s) {
+        let out = List.empty<GameView>();
+        for (g in Map.values(games)) {
+          if (g.ownerAnchor == s.anchor) List.add(out, view(g));
+        };
+        List.toArray(out);
+      };
+    };
+  };
+
+  // Upload / replace a cover image (owner only). Served at /g/<slug>/__cover.
+  public shared func set_cover(token : Blob, slug : Text, ct : Text, bytes : Blob) : async {
+    #ok;
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { #err "not signed in" };
+      case (?s) {
+        switch (Map.get(games, Text.compare, slug)) {
+          case null { #err "no such game" };
+          case (?g) {
+            if (g.ownerAnchor != s.anchor) return #err "not your game";
+            if (Blob.size(bytes) > MAX_FILE_BYTES) return #err "cover over 2 MB";
+            Map.add(covers, Text.compare, slug, { ct; bytes });
+            #ok;
+          };
+        };
+      };
+    };
+  };
+
+  // ─── Moderation ────────────────────────────────────────────────────────
+  //
+  // Weighted community reports quarantine a game at a threshold; a curator
+  // panel votes it back to live or delists it (with a strike); a curator can
+  // pull the emergency brake instantly. Every action lands on a public log.
+  // (Panels are the whole curator set while it's small; hash-drawn panels of
+  // three are the refinement once there are many curators.)
+
+  func nowNs2() : Nat64 { Nat64.fromNat(Int.abs(Time.now())) };
+
+  func logAction(action : Text, target : Text, who : Text, detail : Text, caseId : Nat) {
+    List.add(modLog, { atNs = nowNs2(); action; target; who; detail; caseId });
+  };
+
+  func isCurator(anchor : Blob) : Bool { Set.contains(curators, Blob.compare, anchor) };
+
+  func strikeCount(anchor : Blob) : Nat {
+    switch (Map.get(strikes, Blob.compare, anchor)) { case (?n) n; case null 0 };
+  };
+
+  // Bootstrap: the first signed-in caller claims platform ownership and becomes
+  // the first curator (trust-on-first-use — the deployer calls this once).
+  public shared func claim_owner(token : Blob) : async { #ok; #err : Text } {
+    switch (platformOwner) {
+      case (?_) { #err "owner already claimed" };
+      case null {
+        switch (await* authed(token)) {
+          case null { #err "not signed in" };
+          case (?s) {
+            platformOwner := ?s.anchor;
+            Set.add(curators, Blob.compare, s.anchor);
+            logAction("owner", "", s.name, "claimed platform ownership", 0);
+            #ok;
+          };
+        };
+      };
+    };
+  };
+
+  // Owner-only: appoint another curator by anchor id.
+  public shared func add_curator(token : Blob, curatorAnchor : Blob) : async {
+    #ok;
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { #err "not signed in" };
+      case (?s) {
+        switch (platformOwner) {
+          case (?o) {
+            if (o != s.anchor) return #err "owner only";
+            Set.add(curators, Blob.compare, curatorAnchor);
+            logAction("curator", "", s.name, "appointed a curator", 0);
+            #ok;
+          };
+          case null { #err "no owner yet" };
+        };
+      };
+    };
+  };
+
+  public shared func am_i_curator(token : Blob) : async Bool {
+    switch (await* authed(token)) {
+      case null false;
+      case (?s) isCurator(s.anchor);
+    };
+  };
+
+  // Report a game. Distinct reporters accumulate; at the threshold the game is
+  // auto-quarantined and a case opens.
+  public shared func report(token : Blob, slug : Text, reason : Text) : async {
+    #ok : Text;
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { #err "not signed in" };
+      case (?s) {
+        switch (Map.get(games, Text.compare, slug)) {
+          case null { #err "no such game" };
+          case (?g) {
+            let set = switch (Map.get(reports, Text.compare, slug)) {
+              case (?x) x;
+              case null {
+                let x = Set.empty<Blob>();
+                Map.add(reports, Text.compare, slug, x);
+                x;
+              };
+            };
+            if (Set.contains(set, Blob.compare, s.anchor)) return #err "you already reported this";
+            Set.add(set, Blob.compare, s.anchor);
+            logAction("report", slug, s.name, reason, 0);
+            switch (g.status) {
+              case (#live) {
+                if (Set.size(set) >= QUARANTINE_THRESHOLD) {
+                  caseSeq += 1;
+                  let id = caseSeq;
+                  g.status := #quarantined { caseId = id };
+                  Map.add(
+                    cases,
+                    Nat.compare,
+                    id,
+                    {
+                      id;
+                      slug;
+                      kind = (#reports : CaseKind);
+                      openedAtNs = nowNs2();
+                      votes = Map.empty<Blob, Verdict>();
+                      var resolved = (null : ?Verdict);
+                    },
+                  );
+                  logAction(
+                    "quarantine",
+                    slug,
+                    "automatic (report threshold)",
+                    "reached " # Nat.toText(QUARANTINE_THRESHOLD) # " reports",
+                    id,
+                  );
+                };
+              };
+              case (_) {};
+            };
+            #ok "reported";
+          };
+        };
+      };
+    };
+  };
+
+  // Curator emergency brake — freeze instantly, opening a case for ratification
+  // (for malware / illegal content that cannot wait for a report threshold).
+  public shared func emergency_freeze(token : Blob, slug : Text, reason : Text) : async {
+    #ok : Nat;
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { #err "not signed in" };
+      case (?s) {
+        if (not isCurator(s.anchor)) return #err "curators only";
+        switch (Map.get(games, Text.compare, slug)) {
+          case null { #err "no such game" };
+          case (?g) {
+            caseSeq += 1;
+            let id = caseSeq;
+            g.status := #quarantined { caseId = id };
+            Map.add(
+              cases,
+              Nat.compare,
+              id,
+              {
+                id;
+                slug;
+                kind = (#emergency : CaseKind);
+                openedAtNs = nowNs2();
+                votes = Map.empty<Blob, Verdict>();
+                var resolved = (null : ?Verdict);
+              },
+            );
+            logAction("emergency-freeze", slug, s.name, reason, id);
+            #ok id;
+          };
+        };
+      };
+    };
+  };
+
+  // Curator vote on an open case; at PANEL_MAJORITY it resolves — restore the
+  // game, or delist it and strike the owner.
+  public shared func vote(token : Blob, caseId : Nat, restore : Bool) : async {
+    #ok : Text;
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { #err "not signed in" };
+      case (?s) {
+        if (not isCurator(s.anchor)) return #err "curators only";
+        switch (Map.get(cases, Nat.compare, caseId)) {
+          case null { #err "no such case" };
+          case (?c) {
+            switch (c.resolved) {
+              case (?_) return #err "case already resolved";
+              case null {};
+            };
+            let verdict : Verdict = if (restore) #restore else #delist;
+            Map.add(c.votes, Blob.compare, s.anchor, verdict);
+            logAction("vote", c.slug, s.name, if (restore) "restore" else "delist", caseId);
+            var restores = 0;
+            var delists = 0;
+            for (v in Map.values(c.votes)) {
+              switch (v) { case (#restore) restores += 1; case (#delist) delists += 1 };
+            };
+            if (restores >= PANEL_MAJORITY) {
+              c.resolved := ?#restore;
+              switch (Map.get(games, Text.compare, c.slug)) {
+                case (?g) g.status := #live;
+                case null {};
+              };
+              ignore Map.delete(reports, Text.compare, c.slug);
+              logAction("restore", c.slug, "panel", "reports not substantiated", caseId);
+            } else if (delists >= PANEL_MAJORITY) {
+              c.resolved := ?#delist;
+              switch (Map.get(games, Text.compare, c.slug)) {
+                case (?g) {
+                  let next = strikeCount(g.ownerAnchor) + 1;
+                  Map.add(strikes, Blob.compare, g.ownerAnchor, next);
+                  logAction("delist", c.slug, "panel", "removed from the shelves", caseId);
+                  logAction("strike", c.slug, "panel", g.ownerName # " — strike " # Nat.toText(next), caseId);
+                  ignore Map.delete(games, Text.compare, c.slug);
+                  ignore Map.delete(files, Text.compare, c.slug);
+                  ignore Map.delete(covers, Text.compare, c.slug);
+                  ignore Map.delete(favorites, Text.compare, c.slug);
+                };
+                case null {};
+              };
+            };
+            #ok "voted";
+          };
+        };
+      };
+    };
+  };
+
+  public query func mod_log() : async [LogEntry] {
+    Array.reverse(List.toArray(modLog)); // newest first
+  };
+
+  public query func open_cases() : async [CaseView] {
+    let out = List.empty<CaseView>();
+    for (c in Map.values(cases)) {
+      var restores = 0;
+      var delists = 0;
+      for (v in Map.values(c.votes)) {
+        switch (v) { case (#restore) restores += 1; case (#delist) delists += 1 };
+      };
+      List.add(
+        out,
+        {
+          id = c.id;
+          slug = c.slug;
+          kind = switch (c.kind) { case (#reports) "reports"; case (#emergency) "emergency" };
+          openedAtNs = c.openedAtNs;
+          restoreVotes = restores;
+          delistVotes = delists;
+          resolved = switch (c.resolved) {
+            case (?#restore) ?"restore";
+            case (?#delist) ?"delist";
+            case null null;
+          };
+        },
+      );
+    };
+    List.toArray(out);
   };
 
   // ─── Catalogue (public queries) ────────────────────────────────────────
@@ -434,6 +849,23 @@ persistent actor Backend {
     let file = if (segs.size() == 2) "index.html" else {
       Text.join(Iter.fromArray(Array.sliceToArray(segs, 2, segs.size())), "/");
     };
+    // The creator's cover image (if any) is served from its own store.
+    if (file == "__cover") {
+      switch (Map.get(covers, Text.compare, slug)) {
+        case (?c) {
+          return {
+            status_code = 200;
+            headers = [
+              ("content-type", c.ct),
+              ("access-control-allow-origin", "*"),
+              ("cache-control", "public, max-age=300"),
+            ];
+            body = c.bytes;
+          };
+        };
+        case null { return notFound("no cover for '" # slug # "'") };
+      };
+    };
     switch (Map.get(files, Text.compare, slug)) {
       case null { notFound("no game '" # slug # "' in the vault") };
       case (?fm) {
@@ -476,6 +908,7 @@ persistent actor Backend {
       createdAtNs = 0;
       var updatedAtNs = 0;
       var finished = true;
+      var plays = 0;
     };
     Map.add(games, Text.compare, slug, g);
   };
