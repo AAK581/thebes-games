@@ -4,7 +4,6 @@
  * upload gate always agree about who is signed in.
  */
 import { useEffect, useRef, useState } from "react";
-import { useTheme } from "./useTheme";
 import { useMemphis } from "./useMemphis";
 import { clearAllConsent } from "./memphisDelegation";
 import MemphisGate from "./MemphisGate";
@@ -17,7 +16,6 @@ import Log from "./pages/Log";
 
 export default function App() {
   const auth = useMemphis();
-  const theme = useTheme();
   const route = useHashRoute();
   const [authOpen, setAuthOpen] = useState(false);
 
@@ -68,14 +66,6 @@ export default function App() {
             Sign in
           </button>
         )}
-        <button
-          className="theme-toggle"
-          onClick={theme.toggle}
-          aria-label={`Switch to ${theme.effective === "dark" ? "light" : "dark"} mode`}
-          title={`Switch to ${theme.effective === "dark" ? "light" : "dark"} mode`}
-        >
-          {theme.effective === "dark" ? "☀" : "☾"}
-        </button>
       </header>
       <Frieze />
 

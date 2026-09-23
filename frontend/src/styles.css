@@ -1,45 +1,37 @@
-/* Thebes Games — papyrus editorial design system, v2 "stela".
+/* Thebes Games — dark launcher design system, v3 "night shelf".
 
-   The house palette — "faience arcade": bright papyrus with the real Egyptian
-   tomb colours turned up (faience turquoise = primary, carnelian red = the hot
-   Play/live/energy accent, gold = featured) by day, deep obsidian with brighter
-   faience by dark — carries a full catalogue design: Fraunces display voice, mono
-   technical voice, hairline borders instead of shadows, and one gold
-   accent reserved for featured/starred things. v2 adds the identity
-   layer: a woven-fiber page texture, a pixel-glyph frieze (the cover-art
-   sprites marching in a band, applied as a CSS mask so it recolors per
-   theme), a cartouche around the wordmark, gold inner frames on the
-   stela panels, and a dark arcade-cabinet chrome around the player.
-   Cover art carries the color; the chrome stays quiet. No gradients,
-   no glass, no neon.
+   No light mode: this is a games shelf, so it lives on a deep night canvas
+   that lets the pixel cover art glow — the Steam / itch move (dark chrome,
+   art carries the colour). The Egyptian identity stays in the ACCENTS and
+   motifs: faience turquoise = primary (links, buttons, nav), carnelian red =
+   the hot Play / live / energy accent, gold = featured/starred only — plus
+   the cartouche wordmark, the pixel-glyph frieze, and gold inner frames on
+   the stela panels. The page has real atmosphere (a soft top glow over a
+   faint starfield), not a flat field.
 
-   Theme resolution, in precedence order:
-     1. :root[data-theme="light"|"dark"]  — an explicit choice (useTheme)
-     2. prefers-color-scheme              — the operating system
-     3. the light values below            — the fallback
    Every colour is a variable — never hardcode a hex in a rule. */
 
 :root {
-  --papyrus: #f2eede;      /* page background — brighter paper */
-  --papyrus-deep: #e4dac0; /* hairlines, wells */
-  --surface: #fffdf6;      /* card / panel background */
-  /* --lapis keeps its NAME but now holds the PRIMARY faience turquoise (links,
-     buttons, nav, focus) — renaming ~40 usages pre-deploy wasn't worth the risk. */
-  --lapis: #0e9c8e;        /* PRIMARY faience turquoise */
-  --lapis-deep: #0b7d72;   /* headings, primary hover */
-  --carnelian: #db4324;    /* HOT — Play / live / energy */
-  --carnelian-deep: #b8341a;
-  --ink: #20242b;          /* body text — near-black, high contrast */
-  --ink-soft: #5f6672;     /* secondary text */
-  --gold: #c8911a;         /* featured / stars ONLY — brighter, still readable */
-  --terracotta: #a24a2e;   /* quarantine / caution accents */
-  --teal: #2e9e5b;         /* rating E — green, so it reads apart from faience */
-  --error: #c0341c;
-  --btn-fg: #fffdf6;       /* text on FILLED controls only */
-  --hardshadow: rgb(14 156 142 / 20%);
-  --goldline: rgb(200 145 26 / 55%);  /* inner frames, cartouche */
-  --fiber: rgb(43 36 23 / 5%);        /* papyrus weave threads */
-  --stone: #0f1620;                    /* player cabinet — dark in BOTH themes */
+  color-scheme: dark;
+  --papyrus: #0b0f16;       /* page base — obsidian navy */
+  --papyrus-deep: #26313f;  /* hairlines, wells, borders */
+  --surface: #151d29;       /* card / panel — raised dark; art sits on this */
+  --lapis: #35cbbc;         /* PRIMARY faience turquoise — glows on dark */
+  --lapis-deep: #6fe6d8;    /* headings, primary hover — brighter faience */
+  --carnelian: #ff6a45;     /* HOT — Play / live / energy */
+  --carnelian-deep: #ff835f;
+  --ink: #e8edf3;           /* body text — light */
+  --ink-soft: #93a1b3;      /* secondary text — muted blue-grey */
+  --gold: #f0c65a;          /* featured / stars ONLY */
+  --terracotta: #e08a5c;    /* quarantine / caution accents */
+  --teal: #4fc27d;          /* rating E — green, reads apart from faience */
+  --error: #ff7a5c;
+  --btn-fg: #0a0e14;        /* dark text on FILLED bright controls */
+  --hardshadow: rgb(53 203 188 / 26%); /* faience glow — card hover on dark */
+  --goldline: rgb(240 198 90 / 38%);   /* inner frames, cartouche */
+  --glow: rgb(35 62 92 / 55%);         /* top-of-page atmosphere */
+  --star: rgb(140 185 215 / 6%);       /* faint starfield dots */
+  --stone: #1a2332;                    /* player cabinet — dark metal, raised */
 
   --display: "Fraunces Variable", Georgia, serif;
   --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
@@ -51,66 +43,28 @@
   --site-w: 68rem;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --papyrus: #11161d;
-    --papyrus-deep: #232d3b;
-    --surface: #171e28;
-    --lapis: #33cabb;
-    --lapis-deep: #6fe6d8;
-    --carnelian: #ff6a45;
-    --carnelian-deep: #ff8566;
-    --ink: #e6e0cf;
-    --ink-soft: #a7afbb;
-    --gold: #f0c65a;
-    --terracotta: #d0785a;
-    --teal: #4fc27d;
-    --error: #ff7a5c;
-    --btn-fg: #11161d;
-    --hardshadow: rgb(51 202 187 / 22%);
-    --goldline: rgb(240 198 90 / 45%);
-    --fiber: rgb(230 224 207 / 4%);
-    --stone: #0b1119;
-  }
-}
-
-:root[data-theme="dark"] {
-  --papyrus: #11161d;
-  --papyrus-deep: #232d3b;
-  --surface: #171e28;
-  --lapis: #33cabb;
-  --lapis-deep: #6fe6d8;
-  --carnelian: #ff6a45;
-  --carnelian-deep: #ff8566;
-  --ink: #e6e0cf;
-  --ink-soft: #a7afbb;
-  --gold: #f0c65a;
-  --terracotta: #d0785a;
-  --teal: #4fc27d;
-  --error: #ff7a5c;
-  --btn-fg: #11161d;
-  --hardshadow: rgb(51 202 187 / 22%);
-  --goldline: rgb(240 198 90 / 45%);
-  --fiber: rgb(230 224 207 / 4%);
-  --stone: #0b1119;
-}
-
 /* ─── base ─────────────────────────────────────────────────────────── */
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  background-color: var(--papyrus); /* kills any first-paint flash */
+}
+
 body {
   margin: 0;
+  min-height: 100vh;
   background-color: var(--papyrus);
-  /* woven papyrus fibers — a faint two-direction thread weave */
-  background-image: repeating-linear-gradient(
-      90deg,
-      var(--fiber) 0 1px,
-      transparent 1px 6px
-    ),
-    repeating-linear-gradient(0deg, var(--fiber) 0 1px, transparent 1px 11px);
+  /* Atmosphere, not a flat field: a soft top-centre glow behind the masthead
+     and hero, over a faint starfield — the page reads like one of its own game
+     posters. Fixed so it stays put on scroll (a little parallax depth). */
+  background-image:
+    radial-gradient(var(--star) 1px, transparent 1.6px),
+    radial-gradient(1200px 620px at 50% -14%, var(--glow), transparent 72%);
+  background-size: 46px 46px, 100% 100%;
+  background-attachment: fixed;
   color: var(--ink);
   font-family: var(--serif);
   line-height: 1.5;
@@ -249,27 +203,6 @@ main + .frieze {
 .mainnav a[aria-current="page"] {
   color: var(--lapis);
   border-bottom: 2px solid var(--lapis);
-}
-
-.masthead .theme-toggle {
-  width: 2.1rem;
-  height: 2.1rem;
-  display: grid;
-  place-items: center;
-  align-self: center;
-  padding: 0;
-  font-size: 1rem;
-  line-height: 1;
-  background: var(--surface);
-  color: var(--lapis);
-  border: 1px solid var(--papyrus-deep);
-  border-radius: 50%;
-  cursor: pointer;
-}
-
-.masthead .theme-toggle:hover {
-  background: var(--papyrus-deep);
-  color: var(--lapis-deep);
 }
 
 .authchip {
@@ -631,8 +564,9 @@ button.chip {
 .card:hover {
   text-decoration: none;
   border-color: var(--lapis);
-  transform: translate(-2px, -2px);
-  box-shadow: 5px 5px 0 var(--hardshadow), 0 1px 0 var(--papyrus-deep);
+  transform: translateY(-3px);
+  box-shadow: 0 10px 26px rgb(0 0 0 / 45%), 0 0 0 1px var(--lapis),
+    0 0 22px var(--hardshadow);
 }
 
 .card .cover {
