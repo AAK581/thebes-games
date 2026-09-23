@@ -1,7 +1,11 @@
 # Memphis Delegated Sessions — signing in *inside* an embedded game
 
-**Status:** design approved 2026-09-23 (§11); implementation not started. Mainnet
-Memphis deploy still gated on Kareem's approval.
+**Status:** design approved 2026-09-23 (§11). **Implemented** on both branches —
+`thebes-games@feat/embedded-signin` (frontend, dormant behind
+`window.THEBES_DELEGATION`) and `Thebes-Project@feat/memphis-delegated-sessions`
+(Memphis canister + `MemphisAuth.mo`; `cargo test -p memphis` green, wasm builds).
+**Not deployed.** Mainnet Memphis (921) deploy gated on Kareem's approval — test
+network first.
 **Author:** Thebes Games
 **Scope:** frontend (`thebes-games`) + chain (`Thebes-Project`, Memphis canister 921)
 **Supersedes nothing.** The `standalone ↗` fallback stays until this ships and is proven.
@@ -105,101 +109,104 @@ adapted to Memphis's bearer-token world.
 
 ---
 
-## 4. Chain changes — Memphis canister 921 (`Thebes-Project` branch)
+## 4. Chain changes — Memphis canister 921 (`Thebes-Project` branch) — IMPLEMENTED
 
-Target branch (mirrors your convention): `feat/memphis-delegated-sessions`.
+Branch `feat/memphis-delegated-sessions`. Built and tested (`cargo test -p
+memphis`: 58 pass incl. 8 new gates; wasm builds). **Not deployed** — mainnet 921
+awaits Kareem's approval; test-net first.
+
+> **Design note — how the real substrate reshaped this.** Reading the canister
+> settled two things the earlier draft got wrong. (1) **Memphis never reads
+> `msg.caller`** — every call is authenticated by a token passed as an *argument*
+> (`claim_name` even takes the app `origin` as text for this reason), and Thebes
+> canister ids are `u64`, not principals. So audience can't be a caller check.
+> (2) Sessions live in an in-memory `HashMap` snapshotted on upgrade, not
+> stable-structures. The design below is what actually shipped.
 
 ### 4.1 New state
 
-A stable map of live delegations, keyed by the delegated token's hash (store the
-hash, never the raw token — same discipline as any secret at rest):
+A second in-memory map, disjoint from `SESSIONS`, snapshotted on upgrade exactly
+like the existing maps:
 
-```
-// delegation record
-type Delegation = {
-    anchor_id      : Blob;      // who the user is
-    audience       : Principal; // the ONLY canister that may resolve this token
-    parent_hash    : Blob;      // sha256 of the parent session_token, for cascade
-    issued_at_ns   : Nat64;
-    expires_at_ns  : Nat64;     // min(parent expiry, issued + ttl, issued + MAX_TTL)
-};
-// stable: delegations : Map<Blob /*sha256(deleg_token)*/, Delegation>
-// stable: children     : Map<Blob /*parent_hash*/, Set<Blob /*deleg hash*/>>  (cascade index)
+```rust
+struct DelegatedSessionRecord {
+    anchor_id:     [u8; 32],
+    audience:      String,   // the game backend cid (decimal) the token is for
+    parent_token:  [u8; 32], // the anchor session it descends from — for cascade
+    expires_at_ns: u64,      // min(now+ttl, now+15min, parent.expires)
+    epoch_at_mint: u64,      // parent anchor's sign-out-everywhere epoch
+}
+static DELEGATED_SESSIONS: RefCell<HashMap<[u8;32], DelegatedSessionRecord>>;
 ```
 
-Upgrade-safe: new stable collections only; no change to existing session state,
-no migration of prior records.
+Upgrade-safe: added to `StableMemphisV1` as an `#[serde(default)] Option<Vec<…>>`
+(the codebase's proven post-V1 pattern — an old snapshot lacking the field
+decodes to empty). Verified by the existing forward-compat tests + a new
+round-trip gate.
 
 ### 4.2 New methods
 
 ```candid
-// Caller must present a VALID ANCHOR-LEVEL session_token (proves they hold the
-// real session). Mints a fresh delegated token bound to `audience`.
-open_delegated_session : (
-    session_token : blob,     // the real anchor session — verified, never stored
-    audience      : principal,// the game backend that may resolve this delegation
-    ttl_ns        : nat64     // requested lifetime; clamped server-side
-) -> (variant {
-    Ok  : record { deleg_token : blob; expires_at_ns : nat64 };
-    Err : MemphisError
-});
+// Mint a delegated token from a live ANCHOR session_token (arg #1 — the token
+// IS the authorization, no caller check), scoped to `audience` for `ttl_ns`.
+open_delegated_session : (blob, text, nat64)
+    -> (variant { Ok : DelegatedSessionResult; Err : MemphisError });
 
-// Called BY THE GAME BACKEND (inter-canister). Resolves a delegated token to an
-// anchor IFF msg.caller == the token's audience. This single caller check is
-// what enforces G3.
-verify_delegated : (deleg_token : blob) -> (variant {
-    Ok  : record { anchor_id : blob; expires_at_ns : nat64; display_tag : text };
-    Err : MemphisError   // AudienceMismatch | Expired | Unknown | Revoked
-});
+// Resolve a delegated token to its anchor — ONLY for the matching audience.
+// The GAME BACKEND passes its OWN cid as `audience`; Memphis compares it to the
+// token's stored audience on-canister (the OAuth `aud` check) and returns
+// Err(Unauthorized) on mismatch. `query` (runs replicated cross-canister, like
+// whoami); `verify_delegated_u` is the update-callable twin.
+verify_delegated   : (blob, text) -> (variant { Ok : WhoAmIResult; Err : MemphisError }) query;
+verify_delegated_u : (blob, text) -> (variant { Ok : WhoAmIResult; Err : MemphisError });
 
 // Idempotent explicit revoke (platform calls on stop / sign-out).
-revoke_delegation : (deleg_token : blob) -> (variant { Ok; Err : MemphisError });
+revoke_delegated_session : (blob) -> (variant { Ok; Err : MemphisError });
 ```
 
-### 4.3 Enforcement rules (the security core)
+`verify_delegated` returns a `WhoAmIResult` (the same shape `whoami` returns) so
+the existing `SessionGate → derive_principal_for` flow is **unchanged** — a game
+backend swaps `whoami(token)` for `verify_delegated(token, my_cid)` and nothing
+else moves.
 
-- `open_delegated_session`:
-  - verify `session_token` is a live anchor session (reuse the existing session
-    verifier); reject `Expired`/`Unknown`. This proves **G6**.
-  - **reject if `session_token` is itself a delegated token** (no delegation of a
-    delegation in v1). Enforces **G2**/scope-tightening.
-  - `expires = min(parent.expires, now + ttl_ns, now + MAX_DELEG_TTL)` where
-    `MAX_DELEG_TTL = 15 min` (approved §11). The platform silently re-mints and
-    re-posts a fresh `memphis:session` while the game stays open.
-  - store keyed by `sha256(deleg_token)`; index under `sha256(session_token)`.
-- **Every anchor-level method** (`claim_name`, `end_session`, `register`/factor
-  ops, `open_delegated_session` itself) must call the *anchor-session* verifier,
-  which **must reject a delegated token**. Concretely: tag the two token kinds so
-  the anchor verifier returns `Err(NotAnAnchorSession)` for delegated tokens.
-  This is **G2** and must have its own test (§10, T2).
-- `verify_delegated`: look up `sha256(deleg_token)`; reject if absent/expired;
-  **reject if `msg.caller != record.audience`** (`AudienceMismatch`). This is
-  **G3**.
-- `end_session(session_token)`: after revoking the anchor session, delete every
-  delegation in `children[sha256(session_token)]`. This is the cascade half of
-  **G4**.
+**Errors reuse existing `MemphisError` variants** (`NotAuthenticated` /
+`SessionExpired` / `Unauthorized`) — adding variants would break every existing
+decoder of `whoami`/`claim_name` errors. No Candid-interface break.
 
-### 4.4 Reusable game-backend verifier (ship as a snippet, not a stub)
+### 4.3 Enforcement rules (the security core, as implemented)
 
-A game's backend adds one inter-canister call. Motoko sketch (Rust analogous):
+- **G2 is automatic, not a guarded branch.** Delegated tokens live in a *separate
+  map* from `SESSIONS`. `open_delegated_session`, `claim_name`, and `end_session`
+  all look a token up in `SESSIONS`; a delegated token isn't there, so it resolves
+  to `NotAuthenticated`. No edits to those functions — the map disjointness (a
+  distinct hash domain guarantees no collision) enforces it. Delegation-of-a-
+  delegation therefore can't happen either.
+- **G3 audience binding.** `verify_delegated(token, audience)` returns
+  `Err(Unauthorized)` unless `record.audience == audience`. The backend passes its
+  *own* cid, so a token minted for game A fails at game B (B passes B's cid).
+- **G4 lifetime.** `expires = min(now + ttl, now + 15min, parent.expires)`;
+  `verify_delegated` rejects past-expiry (`SessionExpired`). `end_session(parent)`
+  drops every delegation whose `parent_token` matches (cascade). A
+  sign-out-everywhere epoch bump invalidates delegations via the `epoch_at_mint`
+  check, exactly as it does anchor sessions.
+- **G6 minting authority.** `open_delegated_session` requires a live anchor
+  session token — which only the platform holds.
+
+### 4.4 Reusable game-backend verifier — shipped in `MemphisAuth.mo`
+
+Not a snippet: `verifyDelegated(gate, token, audience)` was added to the standard
+`MemphisAuth.mo` next to `verify`. A game's backend calls it with its own cid; it
+resolves the anchor (only for that audience) and derives the same stable per-app
+principal as a normal sign-in, so game state is identical whether the user signed
+in standalone or in-window:
 
 ```motoko
-// In the game's own canister. MEMPHIS = principal "…921…".
-public shared(msg) func do_authed_thing(deleg_token : Blob, /* … */) : async Result {
-    let who = await Memphis.verify_delegated(deleg_token);
-    switch (who) {
-        case (#Err e) { return #err("not signed in: " # debug_show e) };
-        case (#Ok r)  {
-            let anchor = r.anchor_id;         // <- the user identity, verified
-            // …game logic keyed on `anchor`…
-        };
-    };
+// In the game's own canister; `gate` built with MemphisAuth.initFromCid(921, …).
+switch (await MemphisAuth.verifyDelegated(gate, delegToken, MY_BACKEND_CID)) {
+  case (#ok(id))  { /* id.principal — the verified per-app user */ };
+  case (#err(e))  { /* #Memphis(#Unauthorized) = token wasn't minted for us */ };
 };
 ```
-
-Memphis returns the anchor to this backend **only** because it is the audience.
-No shared secret, no signature verification in the game — it reuses the same
-"ask Memphis who this is" pattern backends already use for anchor sessions.
 
 ---
 
@@ -340,23 +347,26 @@ has over its own canister. Consent (§5.1) makes it explicit and per-game.
 
 ## 9. Verification plan (bounded, falsifiable — no "looks fine")
 
-**Chain (Memphis) unit tests — each asserts a concrete pass/fail:**
-- **T1 happy path:** `open_delegated_session` → `verify_delegated` *from the
-  audience canister* returns the correct `anchor_id`. PASS iff anchor equals the
-  signer's anchor.
-- **T2 anchor-op refusal (G2):** every one of `claim_name`, `end_session`,
-  `open_delegated_session`, factor-mgmt called **with a delegated token** returns
-  `Err(NotAnAnchorSession)`. PASS iff *all* reject.
-- **T3 audience isolation (G3):** `verify_delegated(tokenForA)` called with
-  `caller = B` returns `Err(AudienceMismatch)`. PASS iff rejected; and PASS iff
-  the same token from caller = A still resolves.
-- **T4 expiry (G4):** advance time past `expires_at_ns` ⇒ `Expired`. PASS iff
-  rejected; also assert `expires ≤ parent.expires` at mint.
-- **T5 cascade (G4):** `end_session(parent)` ⇒ all children `verify_delegated`
-  return `Revoked`. PASS iff every child rejects.
-- **T6 upgrade safety:** issue a delegation, `--mode upgrade
-  --wasm-memory-persistence keep`, verify it still resolves; then a second upgrade
-  with the delegation expired is pruned. PASS iff state survives and prunes.
+**Chain (Memphis) unit tests — implemented in `lib.rs`, all passing
+(`cargo test -p memphis`):**
+- **T1 happy path** (`deleg_t1`): mint → `verify_delegated_at(tok, audience)`
+  returns the parent's `anchor_id`. ✅
+- **T2 anchor-op refusal / G2** (`deleg_t2`): a delegated token via `whoami_at`
+  → `NotAuthenticated`, and as a parent to `open_delegated_at` → `NotAuthenticated`
+  (no chaining). Enforced by map disjointness. ✅
+- **T3 audience isolation / G3** (`deleg_t3`): wrong audience → `Unauthorized`;
+  correct audience → `Ok`. ✅
+- **T4 ttl clamp + expiry / G4** (`deleg_t4`): absurd ttl clamps to 15 min; a near
+  parent expiry clamps below it; past-expiry → `SessionExpired`. ✅
+- **T5 end_session cascade / G4** (`deleg_t5`): `end_session(parent)` ⇒ child →
+  `NotAuthenticated`. ✅
+- **T6 sign-out-everywhere / G4** (`deleg_t6`): anchor epoch bump ⇒ child →
+  `SessionExpired`. ✅
+- **T7 upgrade safety** (`deleg_t7`): `build_snapshot` → clear → `restore_snapshot`
+  ⇒ delegation still resolves. (Plus the pre-existing forward-compat suite passes
+  unchanged.) ✅
+- **T8 explicit revoke** (`deleg_t8`): `revoke_delegated_session` removes exactly
+  the token, idempotently. ✅
 
 **Frontend tests:**
 - **T7 no-leak (G1):** capture every `postMessage` the platform emits during a
