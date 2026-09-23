@@ -44,7 +44,7 @@ export default function Home() {
             href={`#/game/${hero.slug}`}
             aria-label={`Open ${hero.title}`}
           >
-            <img className="art" src={coverFor(hero.slug)} alt="" />
+            <img className="art" src={hero.coverUrl ?? coverFor(hero.slug)} alt="" />
             <span className="playbadge" aria-hidden="true">
               <span>▶</span>
             </span>

@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from "react";
 import { gameBySlug, type Game } from "../data";
-import { getGame } from "../registry";
+import { getGame, isFavorite, report, toggleFavorite } from "../registry";
 import { PlayerShell, RatingChip } from "../components";
 import { spriteURI } from "../cover";
 import type { MemphisAuth } from "../useMemphis";
@@ -36,6 +36,18 @@ export default function GamePage({
     };
   }, [slug]);
 
+  const token = auth.session?.session_token_hex;
+  const [fav, setFav] = useState(false);
+  const [favCount, setFavCount] = useState(0);
+  const [reportMsg, setReportMsg] = useState("");
+  useEffect(() => {
+    if (game) setFavCount(game.favorites);
+  }, [game]);
+  useEffect(() => {
+    if (token && game) isFavorite(token, game.slug).then(setFav).catch(() => {});
+    else setFav(false);
+  }, [token, game]);
+
   if (game === undefined) {
     return (
       <div className="emptystate">
@@ -57,6 +69,33 @@ export default function GamePage({
   }
 
   const quarantined = game.status === "quarantined";
+  const g = game; // narrowed to Game past the guards
+
+  async function toggleFav() {
+    if (!token) return onRequestSignIn();
+    try {
+      const now = await toggleFavorite(token, g.slug);
+      setFav(now);
+      setFavCount((c) => c + (now ? 1 : -1));
+    } catch (e) {
+      setReportMsg(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function doReport() {
+    if (!token) return onRequestSignIn();
+    const reason = window
+      .prompt("Why report this game? (stolen, malware, harassment, other)")
+      ?.trim();
+    if (!reason) return;
+    setReportMsg("reporting…");
+    try {
+      await report(token, g.slug, reason);
+      setReportMsg("Reported — thank you. Curators review at the threshold.");
+    } catch (e) {
+      setReportMsg("Couldn't report: " + (e instanceof Error ? e.message : String(e)));
+    }
+  }
 
   return (
     <>
@@ -100,43 +139,47 @@ export default function GamePage({
         </div>
 
         <aside className="facts">
-          <span
-            className="chip"
-            title="Creator, version, plays and favorites are placeholders until the registry canister lands. The canister id is real."
-          >
-            demo data — registry pending
-          </span>
           <dl>
             <dt>creator</dt>
-            <dd>{game.owner}</dd>
-            <dt>version</dt>
-            <dd>{game.version}</dd>
+            <dd>{g.owner}</dd>
             <dt>updated</dt>
-            <dd>{game.updated}</dd>
-            <dt>size</dt>
-            <dd>{game.sizeMB.toFixed(1)} MB</dd>
+            <dd>{g.updated}</dd>
+            {g.sizeMB > 0 && (
+              <>
+                <dt>size</dt>
+                <dd>{g.sizeMB.toFixed(1)} MB</dd>
+              </>
+            )}
             <dt>plays</dt>
-            <dd>{game.plays}</dd>
+            <dd>{g.plays}</dd>
             <dt>favorites</dt>
-            <dd>☆ {game.favorites}</dd>
-            {game.cid && (
+            <dd>★ {favCount}</dd>
+            <dt>served</dt>
+            <dd>{g.vaultSlug ? "vault" : g.cid ? "own canister" : "—"}</dd>
+            {g.cid && (
               <>
                 <dt>canister</dt>
-                <dd>{game.cid}</dd>
+                <dd>{g.cid}</dd>
               </>
             )}
           </dl>
           <div className="chiprow">
-            {game.tags.map((t) => (
+            {g.tags.map((t) => (
               <span key={t} className="chip">
                 {t}
               </span>
             ))}
-            <RatingChip rating={game.rating} />
+            <RatingChip rating={g.rating} />
           </div>
-          <button className="quiet report" disabled title="lands with the registry canister">
-            ⚑ report this game
-          </button>
+          <div className="factactions">
+            <button className="quiet" onClick={() => void toggleFav()}>
+              {fav ? "★ favorited" : "☆ favorite"}
+            </button>
+            <button className="quiet report" onClick={() => void doReport()}>
+              ⚑ report
+            </button>
+          </div>
+          {reportMsg && <p className="hint">{reportMsg}</p>}
         </aside>
       </div>
     </>

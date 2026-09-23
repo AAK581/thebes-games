@@ -12,6 +12,7 @@ import { Frieze, Mark } from "./components";
 import Home from "./pages/Home";
 import GamePage from "./pages/Game";
 import Upload from "./pages/Upload";
+import MyGames from "./pages/MyGames";
 import Log from "./pages/Log";
 
 export default function App() {
@@ -39,9 +40,9 @@ export default function App() {
         </a>
         <span
           className="chip"
-          title="Catalogue entries are placeholders until the registry canister lands — the three embedded games are real."
+          title="The catalogue is live from the on-chain registry — anyone can publish, every game owned by its anchor."
         >
-          demo shelf
+          on-chain shelf
         </span>
         <nav className="mainnav" aria-label="main">
           <a href="#/" {...current("home")}>
@@ -49,6 +50,9 @@ export default function App() {
           </a>
           <a href="#/upload" {...current("upload")}>
             Publish
+          </a>
+          <a href="#/mine" {...current("mine")}>
+            Mine
           </a>
           <a href="#/log" {...current("log")}>
             Log
@@ -85,13 +89,14 @@ export default function App() {
           />
         )}
         {route.name === "upload" && <Upload auth={auth} />}
-        {route.name === "log" && <Log />}
+        {route.name === "mine" && <MyGames auth={auth} />}
+        {route.name === "log" && <Log auth={auth} />}
       </main>
 
       <Frieze />
       <footer className="colophon">
         <span>served from the chain · post-quantum certified · Thebes</span>
-        <span>demo catalogue — numbers become real with the registry canister</span>
+        <span>registry + vault live — publish your own, owned by your anchor</span>
         <span>
           <a href="#/log">transparency log</a> · <a href="#/upload">house rules</a>
         </span>

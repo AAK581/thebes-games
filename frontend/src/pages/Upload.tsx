@@ -9,7 +9,7 @@ import { unzipSync } from "fflate";
 import type { MemphisAuth } from "../useMemphis";
 import MemphisGate from "../MemphisGate";
 import type { Rating } from "../data";
-import { beginPublish, putChunk, finishPublish } from "../registry";
+import { beginPublish, putChunk, finishPublish, setCover } from "../registry";
 
 // Honor the substrate's ~32 KiB chunk discipline, with headroom for the
 // Candid framing (token + slug + path) around the bytes.
@@ -73,6 +73,7 @@ export default function Upload({ auth }: { auth: MemphisAuth }) {
   const [rating, setRating] = useState<Rating | null>(null);
   const [attested, setAttested] = useState(false);
   const [file, setFile] = useState<File | null>(null);
+  const [coverFile, setCoverFile] = useState<File | null>(null);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0); // 0..1
@@ -119,6 +120,13 @@ export default function Upload({ auth }: { auth: MemphisAuth }) {
           setProgress(totalBytes ? sent / totalBytes : 1);
           setStatusMsg(`uploading ${path}`);
         }
+      }
+
+      if (coverFile) {
+        setStatusMsg("uploading cover…");
+        const cbytes = new Uint8Array(await coverFile.arrayBuffer());
+        // Non-fatal: a failed cover still leaves the game published (drawn art).
+        await setCover(token, slug, coverFile.type || "image/png", cbytes).catch(() => {});
       }
 
       setStatusMsg("finalizing…");
@@ -277,10 +285,22 @@ export default function Upload({ auth }: { auth: MemphisAuth }) {
                 ? `${file.name} · ${(file.size / (1024 * 1024)).toFixed(1)} MB — click to replace`
                 : "click to choose your build .zip"}
             </label>
-            <p className="sub">
-              Covers are drawn for you from the title for now — creator uploads
-              land with the media pipeline.
-            </p>
+          </div>
+
+          <div className="field">
+            <span className="label">Cover image — optional (PNG/JPG/WebP, 2 MB max)</span>
+            <label className="dropzone">
+              <input
+                type="file"
+                accept="image/*"
+                style={{ display: "none" }}
+                disabled={busy}
+                onChange={(e) => setCoverFile(e.target.files?.[0] ?? null)}
+              />
+              {coverFile
+                ? `${coverFile.name} — click to replace`
+                : "choose a cover, or leave it and the shelf draws one from the title"}
+            </label>
           </div>
 
           <label className="attest">

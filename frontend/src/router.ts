@@ -13,6 +13,7 @@ export type Route =
   | { name: "home" }
   | { name: "game"; slug: string }
   | { name: "upload" }
+  | { name: "mine" }
   | { name: "log" };
 
 function parse(hash: string): Route {
@@ -22,6 +23,8 @@ function parse(hash: string): Route {
       return parts[1] ? { name: "game", slug: parts[1] } : { name: "home" };
     case "upload":
       return { name: "upload" };
+    case "mine":
+      return { name: "mine" };
     case "log":
       return { name: "log" };
     default:

@@ -1174,6 +1174,24 @@ button.chip {
   margin-top: 1.2rem;
 }
 
+/* facts rail actions (favorite / report) + curator cases */
+.factactions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.cases {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  margin-top: 0.6rem;
+}
+
+.casecard p {
+  margin: 0 0 0.4rem;
+}
+
 .attest {
   display: flex;
   gap: 0.6rem;

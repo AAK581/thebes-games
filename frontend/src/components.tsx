@@ -7,7 +7,7 @@ import type { Game } from "./data";
 import type { MemphisAuth } from "./useMemphis";
 import { useDelegationBridge } from "./useDelegationBridge";
 import type { ConsentRequest } from "./useDelegationBridge";
-import { VAULT_CID } from "./registry";
+import { VAULT_CID, recordPlay } from "./registry";
 import { coverFor, friezeURI } from "./cover";
 
 /** Step pyramid + sun — inline SVG because unicode hieroglyphs render
@@ -73,7 +73,7 @@ export function GameCard({ game }: { game: Game }) {
       href={`#/game/${game.slug}`}
     >
       <div className="cover">
-        <img src={coverFor(game.slug)} alt="" loading="lazy" />
+        <img src={game.coverUrl ?? coverFor(game.slug)} alt="" loading="lazy" />
         {game.featured && !quarantined && (
           <span className="chip gold flag">★ staff shelf</span>
         )}
@@ -245,6 +245,7 @@ export function PlayerShell({
   async function boot() {
     if (!src || !gamePath) return;
     setPhase("loading");
+    void recordPlay(game.slug).catch(() => {}); // fire-and-forget play count
     try {
       const r = await fetch(src, { cache: "no-store" });
       if (!r.ok) throw new Error(`gateway answered ${r.status}`);
@@ -264,7 +265,7 @@ export function PlayerShell({
     return (
       <div className="player">
         <div className="stage">
-          <img className="backdrop" src={coverFor(game.slug)} alt="" />
+          <img className="backdrop" src={game.coverUrl ?? coverFor(game.slug)} alt="" />
           <div className="boot">
             <span className="sandboxnote">
               playable build not in the vault yet — registry entry only
@@ -296,7 +297,7 @@ export function PlayerShell({
           />
         ) : (
           <>
-            <img className="backdrop" src={coverFor(game.slug)} alt="" />
+            <img className="backdrop" src={game.coverUrl ?? coverFor(game.slug)} alt="" />
             {phase === "loading" && (
               <div className="statusline">fetching the bundle from the chain…</div>
             )}
