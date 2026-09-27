@@ -35,6 +35,7 @@ import Int "mo:core/Int";
 import Char "mo:core/Char";
 import Time "mo:core/Time";
 import Principal "mo:core/Principal";
+import Region "mo:core/Region";
 
 persistent actor Backend {
 
@@ -51,6 +52,10 @@ persistent actor Backend {
     description : Text;
     tags : [Text];
     rating : Rating;
+    // The game's native render resolution in px (e.g. RPG Maker MZ is 816×624).
+    // Optional so a mid-deploy old caller still decodes; defaults applied below.
+    resW : ?Nat;
+    resH : ?Nat;
   };
 
   // The public catalogue view — no owner-internal fields beyond the handle.
@@ -69,6 +74,8 @@ persistent actor Backend {
     plays : Nat;
     favorites : Nat;
     cover : Bool; // true when the creator uploaded a cover image
+    resW : Nat; // native resolution the player frames the game at (fills, no letterbox)
+    resH : Nat;
   };
 
   // The stored record.
@@ -92,7 +99,8 @@ persistent actor Backend {
   // field to a record already in stable memory is an incompatible upgrade
   // (M0170); a new top-level stable var is always safe.
 
-  type Cover = { ct : Text; bytes : Blob };
+  type FileRef = { offset : Nat64; length : Nat };
+  type Cover = { ct : Text; offset : Nat64; length : Nat };
 
   // ─── Moderation ────────────────────────────────────────────────────────
   type Verdict = { #restore; #delist };
@@ -191,16 +199,33 @@ persistent actor Backend {
 
   // ─── State ─────────────────────────────────────────────────────────────
 
-  // slug → Game
+  let vaultRegion : Region.Region = Region.new();
+  var vaultTop : Nat64 = 0;
   let games = Map.empty<Text, Game>();
-  // slug → (path → file bytes), for #vault games (finished files)
-  let files = Map.empty<Text, Map.Map<Text, Blob>>();
-  // slug → (path → chunks in order), for uploads in flight
-  let pending = Map.empty<Text, Map.Map<Text, List.List<Blob>>>();
+  let fileStore = Map.empty<Text, Map.Map<Text, FileRef>>();
+  // slug → (path → chunks in order), for uploads in flight.
+  // TRANSIENT on purpose: an in-flight upload is ephemeral (it lives only
+  // between begin_publish and finish_publish). Persisting it is pointless (a
+  // half-uploaded game can't resume across an upgrade) and harmful — a
+  // failed/abandoned upload's multi-MB chunks would otherwise survive in
+  // stable state and, once the total tops ~10 MB, brick every future upgrade
+  // (post_upgrade re-reads all stable vars in one allocation; the substrate
+  // caps a single allocation at 10 MiB). An upgrade mid-upload loses that one
+  // in-flight upload; the publisher re-uploads.
+  transient let pending = Map.empty<Text, Map.Map<Text, List.List<Blob>>>();
+  // slug → cover chunks in flight (transient, same rationale as `pending`): a
+  // cover is uploaded in chunks so no single call body exceeds the node's inline
+  // ingress ceiling (a whole-image set_cover call 413s past ~256 KB), then
+  // cover_commit assembles it into the region.
+  transient let pendingCover = Map.empty<Text, List.List<Blob>>();
   // slug → set of anchors that favorited it
   let favorites = Map.empty<Text, Set.Set<Blob>>();
   // slug → cover image (served at /g/<slug>/__cover)
-  let covers = Map.empty<Text, Cover>();
+  let coverStore = Map.empty<Text, Cover>();
+  // slug → the game's native resolution (px). The player frames the game at
+  // exactly this so it fills the stage instead of letterboxing. A separate map,
+  // not a Game field — a new top-level stable var is upgrade-safe (plays note).
+  let gameRes = Map.empty<Text, { w : Nat; h : Nat }>();
   // slug → play count (kept out of the Game record for upgrade safety)
   let playCounts = Map.empty<Text, Nat>();
 
@@ -225,10 +250,20 @@ persistent actor Backend {
   // http_request_streaming_callback), so a single file is bounded only by the
   // per-game total — no per-file serving ceiling. Covers are served inline in
   // one response, so they keep a small cap.
-  transient let MAX_COVER_BYTES : Nat = 3_000_000;
+  // A cover is served inline in one http_request response, so it must fit the
+  // node's single-response body limit — the same ~1.9 MB bound the streamed
+  // file path chunks at.
+  transient let MAX_COVER_BYTES : Nat = 1_900_000;
+  transient let MAX_COVER_CHUNKS : Nat = 128; // bounds in-flight cover memory
   transient let SERVE_CHUNK : Nat = 1_900_000; // bytes per streamed response chunk
   transient let MAX_FILES : Nat = 4096;
   transient let MAX_CHUNK_BYTES : Nat = 64 * 1024; // one put_chunk
+  // Native-resolution bounds (px). Default is RPG Maker MZ's 816×624; the max
+  // bounds the game canvas so a publisher can't demand an unbounded viewport.
+  transient let DEFAULT_RES_W : Nat = 816;
+  transient let DEFAULT_RES_H : Nat = 624;
+  transient let MIN_RES_DIM : Nat = 200;
+  transient let MAX_RES_DIM : Nat = 2560;
 
   // ─── Helpers ───────────────────────────────────────────────────────────
 
@@ -238,6 +273,75 @@ persistent actor Backend {
   };
   func lowerText(t : Text) : Text {
     Text.fromIter(Iter.map<Char, Char>(t.chars(), lowerChar));
+  };
+
+  // ─── Tag policy — MUST stay in sync with frontend/src/tagPolicy.ts ──────
+  // The browser checks for instant feedback; THIS is the guarantee. Tags land
+  // in the PUBLIC on-chain catalogue, so a slur or illegal-content tag must be
+  // unstorable even when a caller bypasses the frontend and hits begin_publish
+  // directly.
+  transient let TAG_MAX_LEN : Nat = 30;
+  transient let TAG_MAX_COUNT : Nat = 5;
+
+  // Fold to a-z only (lowercase + common leetspeak), so "c-s-a-m" / "cs4m" /
+  // "f@ggot" / "n199a" all collapse onto the same core string we test.
+  func foldTag(t : Text) : Text {
+    let out = List.empty<Char>();
+    for (c0 in t.chars()) {
+      let c = lowerChar(c0);
+      let m : Char = switch (c) {
+        case ('@' or '4') 'a';
+        case ('3') 'e';
+        case ('1' or '!' or '|') 'i';
+        case ('0') 'o';
+        case ('$' or '5') 's';
+        case ('7') 't';
+        case ('6' or '9') 'g';
+        case ('8') 'b';
+        case (_) c;
+      };
+      if (m >= 'a' and m <= 'z') List.add(out, m);
+    };
+    Text.fromIter(List.values(out));
+  };
+
+  transient let BANNED_SUBSTR : [Text] = [
+    "csam", "childporn", "childsex", "childabuse", "childmolest", "pedophile",
+    "paedophile", "pedophilia", "jailbait", "lolicon", "shotacon", "bestiality",
+    "beastiality", "zoophilia", "hentai", "porn", "nsfw",
+  ];
+  transient let BANNED_EXACT : [Text] = [
+    "cp", "pedo", "paedo", "loli", "shota", "rape", "incest", "snuff", "molest",
+    "sex", "xxx", "nigger", "nigga", "faggot", "fag", "chink", "kike", "spic",
+    "tranny", "retard", "gook", "wetback", "coon", "dyke", "beaner", "tard",
+  ];
+
+  // ASCII-only gate kills unicode-homoglyph evasion (only a–z survive to fold).
+  func tagCharsOk(t : Text) : Bool {
+    for (c in t.chars()) {
+      let lc = lowerChar(c);
+      let ok = (lc >= 'a' and lc <= 'z') or (lc >= '0' and lc <= '9') or lc == ' ' or lc == '-';
+      if (not ok) return false;
+    };
+    true;
+  };
+
+  func tagAllowed(raw : Text) : Bool {
+    let f = foldTag(raw);
+    if (f == "") return true;
+    for (b in BANNED_EXACT.values()) { if (f == b) return false };
+    for (b in BANNED_SUBSTR.values()) { if (Text.contains(f, #text b)) return false };
+    true;
+  };
+
+  func tagsRejection(tags : [Text]) : ?Text {
+    if (tags.size() > TAG_MAX_COUNT) return ?"at most 5 tags";
+    for (t in tags.values()) {
+      if (Text.size(t) > TAG_MAX_LEN) return ?("a tag is too long: " # t);
+      if (not tagCharsOk(t)) return ?"tags may use only letters, numbers, spaces and hyphens";
+      if (not tagAllowed(t)) return ?"that tag isn't allowed here";
+    };
+    null;
   };
 
   func hasGame(slug : Text) : Bool {
@@ -292,6 +396,10 @@ persistent actor Backend {
   };
 
   func view(g : Game) : GameView {
+    let res = switch (Map.get(gameRes, Text.compare, g.slug)) {
+      case (?r) r;
+      case null { { w = DEFAULT_RES_W; h = DEFAULT_RES_H } };
+    };
     {
       slug = g.slug;
       title = g.title;
@@ -306,19 +414,24 @@ persistent actor Backend {
       status = g.status;
       plays = playCount(g.slug);
       favorites = favCount(g.slug);
-      cover = switch (Map.get(covers, Text.compare, g.slug)) {
+      cover = switch (Map.get(coverStore, Text.compare, g.slug)) {
         case (?_) true;
         case null false;
       };
+      resW = res.w;
+      resH = res.h;
     };
   };
 
-  func concatBlobs(chunks : List.List<Blob>) : Blob {
-    let buf = List.empty<Nat8>();
-    for (c in List.values(chunks)) {
-      for (b in Blob.toArray(c).values()) { List.add(buf, b) };
-    };
-    Blob.fromArray(List.toArray(buf));
+  transient let REGION_PAGE_BYTES : Nat64 = 65536;
+  func ensureRegionBytes(need : Nat64) {
+    let haveBytes = Region.size(vaultRegion) * REGION_PAGE_BYTES;
+    if (need > haveBytes) { ignore Region.grow(vaultRegion, (need - haveBytes + REGION_PAGE_BYTES - 1) / REGION_PAGE_BYTES) };
+  };
+  func regionAppend(bytes : Blob) : FileRef {
+    let off = vaultTop; let len = Blob.size(bytes);
+    if (len > 0) { ensureRegionBytes(off + Nat64.fromNat(len)); Region.storeBlob(vaultRegion, off, bytes); vaultTop += Nat64.fromNat(len) };
+    { offset = off; length = len };
   };
 
   // ─── Publishing (auth-gated, chunked upload) ───────────────────────────
@@ -334,7 +447,32 @@ persistent actor Backend {
           return #err "publishing suspended — too many strikes";
         };
         if (Text.size(meta.title) == 0) return #err "title is required";
-        let slug = uniqueSlug(slugify(meta.title));
+        switch (tagsRejection(meta.tags)) {
+          case (?reason) return #err reason;
+          case null {};
+        };
+        let base = slugify(meta.title);
+        // A retried publish (after a transient error) shouldn't leave the first
+        // attempt's half-record orphaned under the name and showing in My Games:
+        // reclaim a stale UNFINISHED upload of the same name by the same owner.
+        switch (Map.get(games, Text.compare, base)) {
+          case (?old) {
+            if (old.ownerAnchor == s.anchor and not old.finished) {
+              ignore Map.delete(games, Text.compare, base);
+              ignore Map.delete(pending, Text.compare, base);
+              ignore Map.delete(pendingCover, Text.compare, base);
+              ignore Map.delete(gameRes, Text.compare, base);
+            };
+          };
+          case null {};
+        };
+        let slug = uniqueSlug(base);
+        let rawW = switch (meta.resW) { case (?x) x; case null DEFAULT_RES_W };
+        let rawH = switch (meta.resH) { case (?x) x; case null DEFAULT_RES_H };
+        Map.add(gameRes, Text.compare, slug, {
+          w = Nat.max(MIN_RES_DIM, Nat.min(MAX_RES_DIM, rawW));
+          h = Nat.max(MIN_RES_DIM, Nat.min(MAX_RES_DIM, rawH));
+        });
         let nowNs = Nat64.fromNat(Int.abs(Time.now()));
         let g : Game = {
           slug;
@@ -419,15 +557,13 @@ persistent actor Backend {
                   case null return #err "index.html must be at the root of the bundle";
                   case (?_) {};
                 };
-                // Assemble each file once.
-                let assembled = Map.empty<Text, Blob>();
+                let refs = Map.empty<Text, FileRef>();
                 for ((path, chunks) in Map.entries(pf)) {
-                  // No per-file cap: files are served via the streaming
-                  // callback, bounded only by the per-game total already
-                  // enforced at put_chunk time.
-                  Map.add(assembled, Text.compare, path, concatBlobs(chunks));
+                  let start = vaultTop; var length : Nat = 0;
+                  for (chunk in List.values(chunks)) { let r = regionAppend(chunk); length += r.length };
+                  Map.add(refs, Text.compare, path, { offset = start; length });
                 };
-                Map.add(files, Text.compare, slug, assembled);
+                Map.add(fileStore, Text.compare, slug, refs);
                 ignore Map.delete(pending, Text.compare, slug);
                 g.finished := true;
                 g.updatedAtNs := Nat64.fromNat(Int.abs(Time.now()));
@@ -453,10 +589,12 @@ persistent actor Backend {
           case (?g) {
             if (g.ownerAnchor != s.anchor) return #err "not your game";
             ignore Map.delete(games, Text.compare, slug);
-            ignore Map.delete(files, Text.compare, slug);
+            ignore Map.delete(fileStore, Text.compare, slug);
             ignore Map.delete(pending, Text.compare, slug);
+            ignore Map.delete(pendingCover, Text.compare, slug);
             ignore Map.delete(favorites, Text.compare, slug);
-            ignore Map.delete(covers, Text.compare, slug);
+            ignore Map.delete(coverStore, Text.compare, slug);
+            ignore Map.delete(gameRes, Text.compare, slug);
             ignore Map.delete(playCounts, Text.compare, slug);
             #ok;
           };
@@ -527,7 +665,9 @@ persistent actor Backend {
       case (?s) {
         let out = List.empty<GameView>();
         for (g in Map.values(games)) {
-          if (g.ownerAnchor == s.anchor) List.add(out, view(g));
+          // Only finished games — an in-flight/abandoned upload isn't a game yet
+          // and shouldn't clutter My Games (this hid the orphaned retry record).
+          if (g.ownerAnchor == s.anchor and g.finished) List.add(out, view(g));
         };
         List.toArray(out);
       };
@@ -547,7 +687,121 @@ persistent actor Backend {
           case (?g) {
             if (g.ownerAnchor != s.anchor) return #err "not your game";
             if (Blob.size(bytes) > MAX_COVER_BYTES) return #err "cover too large (~3 MB max)";
-            Map.add(covers, Text.compare, slug, { ct; bytes });
+            let ref = regionAppend(bytes);
+            Map.add(coverStore, Text.compare, slug, { ct; offset = ref.offset; length = ref.length });
+            #ok;
+          };
+        };
+      };
+    };
+  };
+
+  // Append one chunk of a cover image (owner only); commit with cover_commit.
+  // Chunked so no single call body exceeds the node's inline ingress ceiling.
+  public shared func cover_chunk(token : Blob, slug : Text, chunk : Blob) : async {
+    #ok : Nat; // chunks buffered so far
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { return #err "not signed in" };
+      case (?s) {
+        switch (Map.get(games, Text.compare, slug)) {
+          case null { return #err "no such game" };
+          case (?g) {
+            if (g.ownerAnchor != s.anchor) return #err "not your game";
+            if (Blob.size(chunk) > MAX_CHUNK_BYTES) return #err "chunk too large (64 KiB max)";
+            let chunks = switch (Map.get(pendingCover, Text.compare, slug)) {
+              case (?c) c;
+              case null { let c = List.empty<Blob>(); Map.add(pendingCover, Text.compare, slug, c); c };
+            };
+            if (List.size(chunks) >= MAX_COVER_CHUNKS) return #err "cover too large (~1.9 MB max)";
+            List.add(chunks, chunk);
+            #ok (List.size(chunks));
+          };
+        };
+      };
+    };
+  };
+
+  // Assemble the buffered cover into the region and publish it (owner only).
+  public shared func cover_commit(token : Blob, slug : Text, ct : Text) : async {
+    #ok;
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { return #err "not signed in" };
+      case (?s) {
+        switch (Map.get(games, Text.compare, slug)) {
+          case null { return #err "no such game" };
+          case (?g) {
+            if (g.ownerAnchor != s.anchor) return #err "not your game";
+            switch (Map.get(pendingCover, Text.compare, slug)) {
+              case null { return #err "no cover upload in progress" };
+              case (?chunks) {
+                var total : Nat = 0;
+                for (c in List.values(chunks)) total += Blob.size(c);
+                if (total == 0) { ignore Map.delete(pendingCover, Text.compare, slug); return #err "empty cover" };
+                if (total > MAX_COVER_BYTES) {
+                  ignore Map.delete(pendingCover, Text.compare, slug);
+                  return #err "cover too large (~1.9 MB max)";
+                };
+                let start = vaultTop; var length : Nat = 0;
+                for (c in List.values(chunks)) { let r = regionAppend(c); length += r.length };
+                Map.add(coverStore, Text.compare, slug, { ct; offset = start; length });
+                ignore Map.delete(pendingCover, Text.compare, slug);
+                #ok;
+              };
+            };
+          };
+        };
+      };
+    };
+  };
+
+  // Owner-only metadata edit for a published game — title / tagline / description
+  // / tags / rating / resolution. Bytes are managed via re-upload; the cover via
+  // cover_chunk/commit. Lets a creator fix a listing without re-uploading it.
+  public shared func update_game(token : Blob, slug : Text, meta : GameMeta) : async {
+    #ok;
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { return #err "not signed in" };
+      case (?s) {
+        switch (Map.get(games, Text.compare, slug)) {
+          case null { return #err "no such game" };
+          case (?g) {
+            if (g.ownerAnchor != s.anchor) return #err "not your game";
+            if (Text.size(meta.title) == 0) return #err "title is required";
+            switch (tagsRejection(meta.tags)) {
+              case (?reason) return #err reason;
+              case null {};
+            };
+            // Replace the record (metadata fields are immutable); slug, owner,
+            // source, size, status, createdAt and finished all carry over.
+            let updated : Game = {
+              slug = g.slug;
+              title = meta.title;
+              tagline = meta.tagline;
+              description = meta.description;
+              tags = meta.tags;
+              rating = meta.rating;
+              ownerAnchor = g.ownerAnchor;
+              ownerName = g.ownerName;
+              source = g.source;
+              var sizeBytes = g.sizeBytes;
+              var status = g.status;
+              createdAtNs = g.createdAtNs;
+              var updatedAtNs = Nat64.fromNat(Int.abs(Time.now()));
+              var finished = g.finished;
+            };
+            Map.add(games, Text.compare, slug, updated);
+            let rawW = switch (meta.resW) { case (?x) x; case null DEFAULT_RES_W };
+            let rawH = switch (meta.resH) { case (?x) x; case null DEFAULT_RES_H };
+            Map.add(gameRes, Text.compare, slug, {
+              w = Nat.max(MIN_RES_DIM, Nat.min(MAX_RES_DIM, rawW));
+              h = Nat.max(MIN_RES_DIM, Nat.min(MAX_RES_DIM, rawH));
+            });
             #ok;
           };
         };
@@ -761,8 +1015,8 @@ persistent actor Backend {
                   logAction("delist", c.slug, "panel", "removed from the shelves", caseId);
                   logAction("strike", c.slug, "panel", g.ownerName # " — strike " # Nat.toText(next), caseId);
                   ignore Map.delete(games, Text.compare, c.slug);
-                  ignore Map.delete(files, Text.compare, c.slug);
-                  ignore Map.delete(covers, Text.compare, c.slug);
+                  ignore Map.delete(fileStore, Text.compare, c.slug);
+                  ignore Map.delete(coverStore, Text.compare, c.slug);
                   ignore Map.delete(favorites, Text.compare, c.slug);
                 };
                 case null {};
@@ -863,30 +1117,27 @@ persistent actor Backend {
     };
   };
 
-  // The `index`-th SERVE_CHUNK-sized slice of `bytes`.
-  func chunkOf(bytes : Blob, index : Nat) : Blob {
-    let arr = Blob.toArray(bytes);
+  func chunkOfRegion(ref : FileRef, index : Nat) : Blob {
     let start = index * SERVE_CHUNK;
-    if (start >= arr.size()) return Blob.fromArray([]);
-    let end = Nat.min(start + SERVE_CHUNK, arr.size());
-    Blob.fromArray(Array.sliceToArray(arr, start, end));
+    if (start >= ref.length) return "" : Blob;
+    Region.loadBlob(vaultRegion, ref.offset + Nat64.fromNat(start), Nat.min(SERVE_CHUNK, ref.length - start));
   };
 
   // A response for a stored file: inline when it fits one response, else the
   // first chunk + a streaming strategy the node follows for the rest.
-  func serveBytes(slug : Text, path : Text, ct : Text, bytes : Blob) : HttpResponse {
+  func serveBytes(slug : Text, path : Text, ct : Text, ref : FileRef) : HttpResponse {
     let headers = [
       ("content-type", ct),
       ("access-control-allow-origin", "*"),
       ("cache-control", "public, max-age=60"),
     ];
-    if (Blob.size(bytes) <= SERVE_CHUNK) {
-      { status_code = 200; headers; body = bytes; streaming_strategy = null };
+    if (ref.length <= SERVE_CHUNK) {
+      { status_code = 200; headers; body = chunkOfRegion(ref, 0); streaming_strategy = null };
     } else {
       {
         status_code = 200;
         headers;
-        body = chunkOf(bytes, 0);
+        body = chunkOfRegion(ref, 0);
         streaming_strategy = ?(
           #Callback {
             token = { slug; path; index = 1 };
@@ -918,7 +1169,7 @@ persistent actor Backend {
     };
     // The creator's cover image (if any) is served from its own store.
     if (file == "__cover") {
-      switch (Map.get(covers, Text.compare, slug)) {
+      switch (Map.get(coverStore, Text.compare, slug)) {
         case (?c) {
           return {
             status_code = 200;
@@ -927,18 +1178,18 @@ persistent actor Backend {
               ("access-control-allow-origin", "*"),
               ("cache-control", "public, max-age=300"),
             ];
-            body = c.bytes;
+            body = Region.loadBlob(vaultRegion, c.offset, c.length);
             streaming_strategy = null;
           };
         };
         case null { return notFound("no cover for '" # slug # "'") };
       };
     };
-    switch (Map.get(files, Text.compare, slug)) {
+    switch (Map.get(fileStore, Text.compare, slug)) {
       case null { notFound("no game '" # slug # "' in the vault") };
       case (?fm) {
         switch (Map.get(fm, Text.compare, file)) {
-          case (?bytes) { serveBytes(slug, file, contentType(file), bytes) };
+          case (?ref) { serveBytes(slug, file, contentType(file), ref) };
           case null { notFound("no file '" # file # "' in '" # slug # "'") };
         };
       };
@@ -949,15 +1200,15 @@ persistent actor Backend {
   // streaming strategy in serveBytes). Serves only public vault bytes — the
   // same bytes http_request already serves, so no new exposure.
   public query func http_request_streaming_callback(token : StreamingToken) : async StreamingCallbackResponse {
-    switch (Map.get(files, Text.compare, token.slug)) {
+    switch (Map.get(fileStore, Text.compare, token.slug)) {
       case null { { body = Blob.fromArray([]); token = null } };
       case (?fm) {
         switch (Map.get(fm, Text.compare, token.path)) {
           case null { { body = Blob.fromArray([]); token = null } };
-          case (?bytes) {
-            let more = (token.index + 1) * SERVE_CHUNK < Blob.size(bytes);
+          case (?ref) {
+            let more = (token.index + 1) * SERVE_CHUNK < ref.length;
             {
-              body = chunkOf(bytes, token.index);
+              body = chunkOfRegion(ref, token.index);
               token = if (more) ?{
                 slug = token.slug;
                 path = token.path;
@@ -969,6 +1220,8 @@ persistent actor Backend {
       };
     };
   };
+
+
 
   // ─── Seed: the three games already live on the WAN, as #canister entries ─
 
