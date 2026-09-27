@@ -808,6 +808,9 @@ button.chip {
 
 .prose p {
   margin: 0.8rem 0;
+  /* Keep the line breaks the creator typed — HTML would collapse them.
+     pre-line wraps normally but honours newlines. */
+  white-space: pre-line;
 }
 
 /* ─── player ───────────────────────────────────────────────────────── */

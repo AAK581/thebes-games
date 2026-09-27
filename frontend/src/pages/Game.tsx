@@ -138,7 +138,9 @@ export default function GamePage({
           )}
 
           <div className="prose">
-            <p>{game.description}</p>
+            {paragraphsOf(game.description).map((para, i) => (
+              <p key={i}>{para}</p>
+            ))}
           </div>
         </div>
 
@@ -180,6 +182,19 @@ export default function GamePage({
       </div>
     </>
   );
+}
+
+/**
+ * A description is plain text typed into a textarea, and HTML collapses every
+ * newline into a space — so what the creator wrote as paragraphs arrived as
+ * one wall of text. Blank lines separate paragraphs; single newlines inside a
+ * paragraph survive via `white-space: pre-line` on .prose p.
+ */
+export function paragraphsOf(text: string): string[] {
+  return text
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter((p) => p !== "");
 }
 
 /** The creator's screenshots: a strip of thumbnails, click to open one full
