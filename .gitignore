@@ -9,3 +9,7 @@ backend/target/
 # mops package cache and local chain state
 .mops/
 .thebes/
+
+# dev-session artifacts: screenshots and game zips used as upload fixtures
+devScreenshots/
+zipGameFromDev/
