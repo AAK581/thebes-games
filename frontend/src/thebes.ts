@@ -13,7 +13,7 @@
 // nat64 — so the template has zero runtime dependencies. Grow it as
 // your interface grows, or swap in a full Candid library later.
 
-export const BACKEND_CANISTER_ID = 149705289632214;
+export const BACKEND_CANISTER_ID = 24874376952694;
 
 // Same-origin when served from the chain via the boundary
 // (/_/raw/<cid>/…). The Vite dev server proxies /api there too, so
@@ -216,6 +216,126 @@ async function fetchWithRetry(url: string, init?: RequestInit): Promise<any> {
   throw new Error(`the network is briefly unreachable — please try again (${lastErr})`);
 }
 
+// ─── nonce ownership ─────────────────────────────────────────────────
+//
+// The substrate's replay filter is a per-sender high-water mark, and its
+// /api/next_nonce view LAGS finalization: right after a submit, the endpoint
+// can still return the nonce we just used. Fetching next_nonce before every
+// call therefore collides the moment calls come faster than blocks finalize —
+// which a real publish does (a 400-file game is hundreds of put_chunks). The
+// symptom is "nonce 102 already used (last seen: 102)".
+//
+// Fix: fetch next_nonce ONCE per sender to seed, then OWN the sequence with a
+// local counter — every claim returns a distinct, monotonically increasing
+// nonce with no network round-trip and no lag window. Gaps are fine (the
+// substrate accepts any nonce above the high-water mark), so a rejected submit
+// simply leaves a hole. On the rare genuine replay (e.g. another tab, or a
+// stale seed) the chain names the real high-water mark and we jump past it.
+//
+// CRITICAL — the replay filter accepts a nonce only if it EXCEEDS the current
+// high-water mark, so nonces must ARRIVE at the node in increasing order, not
+// merely be distinct. A parallel upload that fires 135/136/137 at once can
+// have 137 land first → the node sets hw=137 → 135 and 136 arrive after and
+// are rejected FOREVER ("nonce 135 already used (last seen: 137)"). So the
+// claim→submit critical section is serialized through one global queue: submits
+// go out strictly in nonce order. Receipts are NOT serialized — they finalize
+// in parallel, which is where an upload gets its throughput.
+
+const nonceCounters = new Map<string, number>();
+const nonceSeeding = new Map<string, Promise<void>>();
+
+// Global submit queue — chains each claim→submit after the previous one so the
+// node sees nonces in order. Errors are swallowed on the tail so one failed
+// submit never wedges the chain.
+let submitTail: Promise<unknown> = Promise.resolve();
+function serializeSubmit<T>(fn: () => Promise<T>): Promise<T> {
+  const result = submitTail.then(fn, fn);
+  submitTail = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
+}
+
+async function claimNonce(sender: string): Promise<number> {
+  if (!nonceCounters.has(sender)) {
+    // Seed once, and dedupe concurrent first-claims so they share one fetch.
+    let seeding = nonceSeeding.get(sender);
+    if (!seeding) {
+      seeding = (async () => {
+        const nj = await fetchWithRetry(`${BASE}/api/next_nonce?sender=${sender}`, {
+          cache: "no-store",
+        });
+        if (typeof nj.next_nonce !== "number") throw new Error("malformed next_nonce reply");
+        if (!nonceCounters.has(sender)) nonceCounters.set(sender, nj.next_nonce);
+      })();
+      nonceSeeding.set(sender, seeding);
+    }
+    await seeding;
+    nonceSeeding.delete(sender);
+  }
+  const n = nonceCounters.get(sender)!;
+  nonceCounters.set(sender, n + 1);
+  return n;
+}
+
+/** A replay rejection named the real high-water mark — jump the local counter
+    past it and return the nonce to retry with. */
+function reconcileNonce(sender: string, lastSeen: number): number {
+  const next = lastSeen + 1;
+  const cur = nonceCounters.get(sender) ?? next;
+  nonceCounters.set(sender, Math.max(cur, next + 1));
+  return next;
+}
+
+/** Ensure the next claimed nonce is at least `atLeast`. */
+function bumpNonceTo(sender: string, atLeast: number): void {
+  const cur = nonceCounters.get(sender) ?? atLeast;
+  if (atLeast > cur) nonceCounters.set(sender, atLeast);
+}
+
+/** A nonce replay reported by the RECEIPT (execution time), not the submit.
+    The submit was pooled at a nonce that the finalized high-water had already
+    passed — so the call did NOT execute and is safe to re-submit. Carries the
+    real high-water so the caller can jump the counter past it. */
+class NonceReplayError extends Error {
+  lastSeen: number;
+  constructor(lastSeen: number) {
+    super(`nonce replayed at execution (last seen: ${lastSeen})`);
+    this.lastSeen = lastSeen;
+  }
+}
+
+/** If `err` is a "nonce N already used (last seen: M)" string, return M. */
+function replayHighWater(err: unknown): number | null {
+  if (typeof err !== "string" || !/nonce .* already used/i.test(err)) return null;
+  const m = err.match(/last seen:\s*(\d+)/i);
+  return m ? Number(m[1]) : null;
+}
+
+/** Claim a nonce and get it onto the wire before the next claim (serialized,
+    so arrivals stay ordered); on a replay rejection, jump past the named
+    high-water mark and retry (bounded). Returns the node's queued response. */
+function submitOwned(method: string, argHex: string, sender: string): Promise<any> {
+  return serializeSubmit(async () => {
+    let nonce = await claimNonce(sender);
+    let j = await submitCall(method, argHex, sender, nonce);
+    let tries = 0;
+    while (
+      !j.queued &&
+      typeof j.error === "string" &&
+      /nonce .* already used/i.test(j.error) &&
+      tries < 8
+    ) {
+      tries++;
+      const m = j.error.match(/last seen:\s*(\d+)/i);
+      nonce = reconcileNonce(sender, m ? Number(m[1]) : nonce);
+      j = await submitCall(method, argHex, sender, nonce);
+    }
+    return j;
+  });
+}
+
 // ─── the three motions ───────────────────────────────────────────────
 
 export async function query(method: string, argHex: string): Promise<string | bigint> {
@@ -261,44 +381,44 @@ async function submitCall(
 
 export async function call(method: string, argHex: string): Promise<string | bigint> {
   const sender = demoSender();
-  const nj = await fetchWithRetry(`${BASE}/api/next_nonce?sender=${sender}`, {
-    cache: "no-store",
-  });
-  if (typeof nj.next_nonce !== "number") throw new Error("malformed next_nonce reply");
-
-  let j = await submitCall(method, argHex, sender, nj.next_nonce);
-
-  // Nonce recovery. A replay rejection means the nonce we were given was
-  // behind the substrate's replay set — the call did NOT execute, so
-  // re-submitting is safe. The rejection helpfully names the real
-  // high-water mark ("nonce 0 already used (last seen: 8)"), so resubmit
-  // at last_seen + 1 rather than guessing.
-  if (!j.queued && typeof j.error === "string" && /nonce .* already used/i.test(j.error)) {
-    const m = j.error.match(/last seen:\s*(\d+)/i);
-    const recovered = m ? Number(m[1]) + 1 : nj.next_nonce + 1;
-    j = await submitCall(method, argHex, sender, recovered);
+  // Re-submit on an EXECUTION-time replay: a receipt reporting the nonce was
+  // already used means the message never executed, so a fresh, higher nonce is
+  // safe. (submitOwned already covers the submit-time replay.)
+  for (let attempt = 0; ; attempt++) {
+    const j = await submitOwned(method, argHex, sender);
+    if (!j.queued || !j.message_hash) throw new Error(j.error || "call rejected");
+    try {
+      return await pollReceipt(j.message_hash);
+    } catch (e) {
+      if (e instanceof NonceReplayError && attempt < 8) {
+        bumpNonceTo(sender, e.lastSeen + 1);
+        continue;
+      }
+      throw e;
+    }
   }
-
-  if (!j.queued || !j.message_hash) throw new Error(j.error || "call rejected");
-  return pollReceipt(j.message_hash);
 }
 
 async function pollReceipt(hashHex: string): Promise<string | bigint> {
-  const deadline = Date.now() + 30_000;
-  let transientPolls = 0;
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
+    let j: any;
     try {
-      const j = await fetchWithRetry(`${BASE}/api/receipt?hash=${hashHex}`);
-      if (j.found) {
-        if (j.status === "success") return decodeReply(j.reply || "");
-        throw new Error(j.error || "call failed on chain");
-      }
-    } catch (e) {
-      // A transient during polling is not a failed call — the update may
-      // still be in flight. Keep polling until the deadline.
-      if (++transientPolls > 10) throw e;
+      j = await fetchWithRetry(`${BASE}/api/receipt?hash=${hashHex}`);
+    } catch {
+      // Transient (boundary 502, validator briefly unreachable) — the update
+      // may still be in flight. Keep polling until the deadline; do NOT treat
+      // a flaky gateway as a failed call.
+      await new Promise((res) => setTimeout(res, 600));
+      continue;
     }
-    await new Promise((res) => setTimeout(res, 500));
+    if (j.found) {
+      if (j.status === "success") return decodeReply(j.reply || "");
+      const hw = replayHighWater(j.error);
+      if (hw !== null) throw new NonceReplayError(hw); // lost at execution — re-submit
+      throw new Error(j.error || "call failed on chain"); // real on-chain failure
+    }
+    await new Promise((res) => setTimeout(res, 600));
   }
   throw new Error("timed out waiting for the chain's receipt");
 }
@@ -327,19 +447,22 @@ export async function queryRaw(method: string, argHex: string): Promise<string> 
 }
 
 async function pollReceiptRaw(hashHex: string): Promise<string> {
-  const deadline = Date.now() + 30_000;
-  let transientPolls = 0;
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
+    let j: any;
     try {
-      const j = await fetchWithRetry(`${BASE}/api/receipt?hash=${hashHex}`);
-      if (j.found) {
-        if (j.status === "success") return j.reply || "";
-        throw new Error(j.error || "call failed on chain");
-      }
-    } catch (e) {
-      if (++transientPolls > 10) throw e;
+      j = await fetchWithRetry(`${BASE}/api/receipt?hash=${hashHex}`);
+    } catch {
+      await new Promise((res) => setTimeout(res, 600));
+      continue;
     }
-    await new Promise((res) => setTimeout(res, 500));
+    if (j.found) {
+      if (j.status === "success") return j.reply || "";
+      const hw = replayHighWater(j.error);
+      if (hw !== null) throw new NonceReplayError(hw); // lost at execution — re-submit
+      throw new Error(j.error || "call failed on chain");
+    }
+    await new Promise((res) => setTimeout(res, 600));
   }
   throw new Error("timed out waiting for the chain's receipt");
 }
@@ -347,17 +470,18 @@ async function pollReceiptRaw(hashHex: string): Promise<string> {
 /** Update returning the raw receipt reply hex (undecoded). */
 export async function callRaw(method: string, argHex: string): Promise<string> {
   const sender = demoSender();
-  const nj = await fetchWithRetry(`${BASE}/api/next_nonce?sender=${sender}`, {
-    cache: "no-store",
-  });
-  if (typeof nj.next_nonce !== "number") throw new Error("malformed next_nonce reply");
-
-  let j = await submitCall(method, argHex, sender, nj.next_nonce);
-  if (!j.queued && typeof j.error === "string" && /nonce .* already used/i.test(j.error)) {
-    const m = j.error.match(/last seen:\s*(\d+)/i);
-    const recovered = m ? Number(m[1]) + 1 : nj.next_nonce + 1;
-    j = await submitCall(method, argHex, sender, recovered);
+  // Re-submit on an EXECUTION-time replay (see call() above).
+  for (let attempt = 0; ; attempt++) {
+    const j = await submitOwned(method, argHex, sender);
+    if (!j.queued || !j.message_hash) throw new Error(j.error || "call rejected");
+    try {
+      return await pollReceiptRaw(j.message_hash);
+    } catch (e) {
+      if (e instanceof NonceReplayError && attempt < 8) {
+        bumpNonceTo(sender, e.lastSeen + 1);
+        continue;
+      }
+      throw e;
+    }
   }
-  if (!j.queued || !j.message_hash) throw new Error(j.error || "call rejected");
-  return pollReceiptRaw(j.message_hash);
 }

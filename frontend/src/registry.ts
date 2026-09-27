@@ -34,6 +34,8 @@ const GameMetaT = IDL.Record({
   description: IDL.Text,
   tags: IDL.Vec(IDL.Text),
   rating: RatingT,
+  resW: IDL.Opt(IDL.Nat),
+  resH: IDL.Opt(IDL.Nat),
 });
 const GameViewT = IDL.Record({
   slug: IDL.Text,
@@ -50,6 +52,8 @@ const GameViewT = IDL.Record({
   plays: IDL.Nat,
   favorites: IDL.Nat,
   cover: IDL.Bool,
+  resW: IDL.Nat,
+  resH: IDL.Nat,
 });
 const LogEntryT = IDL.Record({
   atNs: IDL.Nat64,
@@ -114,6 +118,8 @@ export interface MetaInput {
   description: string;
   tags: string[];
   rating: Rating;
+  resW: number;
+  resH: number;
 }
 
 // ─── publish (auth-gated, chunked) ───────────────────────────────────────
@@ -132,6 +138,8 @@ export async function beginPublish(
         description: m.description,
         tags: m.tags,
         rating: ratingVariant(m.rating),
+        resW: [BigInt(Math.round(m.resW))],
+        resH: [BigInt(Math.round(m.resH))],
       },
     ]
   );
@@ -213,6 +221,8 @@ function toGame(v: any): Game {
     cid: canisterCid,
     vaultSlug,
     coverUrl: v.cover ? `/_/raw/${VAULT_CID}/g/${v.slug}/__cover` : undefined,
+    resW: Number(v.resW as bigint),
+    resH: Number(v.resH as bigint),
   };
 }
 
@@ -243,14 +253,27 @@ export async function myGames(tokenHex: string): Promise<Game[]> {
   return (views as Record<string, unknown>[]).map(toGame);
 }
 
+// Matches the game-file chunk size — small enough that one call body stays well
+// under the node's inline ingress ceiling (a whole-image set_cover call 413s).
+const COVER_CHUNK = 32 * 1000;
+
 export async function setCover(
   tokenHex: string,
   slug: string,
   contentType: string,
   bytes: Uint8Array
 ): Promise<void> {
-  const [res] = dec([ResUnit], await callRaw("set_cover", enc([BlobT, IDL.Text, IDL.Text, BlobT], [fromHex(tokenHex), slug, contentType, bytes])));
-  unwrap<null>(res, "set_cover");
+  if (bytes.length === 0) return;
+  const token = fromHex(tokenHex);
+  // Chunked upload: send the image in pieces (serialized + nonce-safe via
+  // callRaw), then commit — the backend assembles them into the region.
+  for (let off = 0; off < bytes.length; off += COVER_CHUNK) {
+    const chunk = bytes.subarray(off, Math.min(off + COVER_CHUNK, bytes.length));
+    const [res] = dec([ResNat], await callRaw("cover_chunk", enc([BlobT, IDL.Text, BlobT], [token, slug, chunk])));
+    unwrap<bigint>(res, "cover_chunk");
+  }
+  const [res] = dec([ResUnit], await callRaw("cover_commit", enc([BlobT, IDL.Text, IDL.Text], [token, slug, contentType])));
+  unwrap<null>(res, "cover_commit");
 }
 
 // ─── moderation ──────────────────────────────────────────────────────────

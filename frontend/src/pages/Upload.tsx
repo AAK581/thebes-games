@@ -4,11 +4,12 @@
  * canister (gated by your Memphis session), then it goes live in the registry
  * and plays from /_/raw/<vault>/g/<slug>/.
  */
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { unzipSync } from "fflate";
 import type { MemphisAuth } from "../useMemphis";
 import type { Rating } from "../data";
 import { beginPublish, putChunk, finishPublish, setCover } from "../registry";
+import { cleanTag, TAG_MAX_COUNT } from "../tagPolicy";
 
 // Honor the substrate's ~32 KiB chunk discipline, with headroom for the
 // Candid framing (token + slug + path) around the bytes.
@@ -18,17 +19,78 @@ const CHUNK = 32 * 1000;
 const MAX_TOTAL = 256 * 1024 * 1024; // 256 MB / game
 const MAX_FILE = MAX_TOTAL;
 const MAX_FILES = 4096;
+const MAX_TAGS = TAG_MAX_COUNT;
+// A starting vocabulary people can click instead of inventing their own — keeps
+// the shelf's tags consistent and browsable. Free typing still works alongside.
+const SUGGESTED_TAGS = [
+  "action", "adventure", "arcade", "platformer", "puzzle", "rpg",
+  "shooter", "strategy", "roguelike", "simulation", "racing", "fighting",
+  "horror", "survival", "sandbox", "cards", "rhythm", "visual-novel",
+  "metroidvania", "tower-defense", "2d", "3d", "pixel-art", "multiplayer",
+  "co-op", "retro", "casual", "classic", "comedy",
+];
+// Upload several files at once for throughput. The submit step is serialized
+// globally in thebes.ts (nonces MUST arrive in order or the chain rejects the
+// lower ones as replays), so this concurrency only overlaps the RECEIPT waits —
+// which is where the wall-clock savings are. It also bounds how many chunks sit
+// un-finalized in the node's pool at once (≤ CONCURRENCY × CHUNK ≈ 128 KB),
+// well under the substrate's inline-block ceiling. Chunks WITHIN a file stay
+// sequential (the vault appends in arrival order); only distinct files overlap.
+const UPLOAD_CONCURRENCY = 4;
+// The cover uploads in chunks (registry.setCover) so the upload itself isn't
+// size-bound — but it's SERVED inline in one response, so downscale on the
+// client to stay under the backend's ~1.9 MB inline cap. A shelf never shows
+// more than a few hundred px, so a 6000px screenshot would waste the budget.
+const COVER_MAX_DIM = 1600; // longest side, px
+const COVER_MAX_BYTES = 1_500_000; // margin under the backend's 1.9 MB serve cap
 
 function slugify(title: string): string {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-function parseTags(s: string): string[] {
-  return s
-    .split(",")
-    .map((t) => t.trim())
-    .filter((t) => t !== "")
-    .slice(0, 5);
+/** Prepared cover: decoded, dimension-clamped, under the byte cap. Downscales
+    via canvas only when needed; a small in-spec image is passed through
+    untouched so we never re-encode (and degrade) art that already fits. */
+async function prepareCover(
+  file: File
+): Promise<{ bytes: Uint8Array; type: string; w: number; h: number }> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i);
+      i.onerror = () => rej(new Error("that file isn't a readable image"));
+      i.src = url;
+    });
+    const w0 = img.naturalWidth;
+    const h0 = img.naturalHeight;
+    const raw = new Uint8Array(await file.arrayBuffer());
+    const scale = Math.min(1, COVER_MAX_DIM / Math.max(w0, h0));
+    if (scale === 1 && raw.length <= COVER_MAX_BYTES) {
+      return { bytes: raw, type: file.type || "image/png", w: w0, h: h0 };
+    }
+    const w = Math.max(1, Math.round(w0 * scale));
+    const h = Math.max(1, Math.round(h0 * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("couldn't process that image in this browser");
+    ctx.drawImage(img, 0, 0, w, h);
+    // WebP is the smallest broadly-supported encode; step quality down until it
+    // fits the cap.
+    let blob: Blob | null = null;
+    for (const q of [0.9, 0.82, 0.72, 0.6, 0.5]) {
+      blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/webp", q));
+      if (blob && blob.size <= COVER_MAX_BYTES) break;
+    }
+    if (!blob || blob.size > COVER_MAX_BYTES) {
+      throw new Error("couldn't shrink that cover enough — try a smaller image");
+    }
+    return { bytes: new Uint8Array(await blob.arrayBuffer()), type: blob.type || "image/webp", w, h };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 /** Drop directory entries; if there's no root index.html but a single top
@@ -76,67 +138,151 @@ export default function Upload({
   const [title, setTitle] = useState("");
   const [taglineText, setTaglineText] = useState("");
   const [description, setDescription] = useState("");
-  const [tags, setTags] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagDraft, setTagDraft] = useState("");
+  const [tagErr, setTagErr] = useState("");
   const [rating, setRating] = useState<Rating | null>(null);
+  const [resW, setResW] = useState(816); // RPG Maker MZ default
+  const [resH, setResH] = useState(624);
   const [attested, setAttested] = useState(false);
   const [file, setFile] = useState<File | null>(null);
-  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [cover, setCoverState] = useState<
+    { bytes: Uint8Array; type: string; w: number; h: number; name: string } | null
+  >(null);
+  const [coverErr, setCoverErr] = useState("");
+  const [coverBusy, setCoverBusy] = useState(false);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0); // 0..1
   const [statusMsg, setStatusMsg] = useState("");
+  const [fileCount, setFileCount] = useState<[number, number] | null>(null); // [done, total]
   const [error, setError] = useState("");
   const [publishedSlug, setPublishedSlug] = useState("");
+
+  function commitTag(raw: string) {
+    if (!raw.trim()) {
+      setTagDraft("");
+      return;
+    }
+    const res = cleanTag(raw);
+    setTagDraft("");
+    if (!res.ok) {
+      // Blocked or malformed (e.g. a slur / illegal-content tag) — say so, add nothing.
+      setTagErr(res.reason);
+      return;
+    }
+    setTagErr("");
+    setTags((prev) =>
+      prev.includes(res.tag) || prev.length >= MAX_TAGS ? prev : [...prev, res.tag]
+    );
+  }
+  function onTagKey(e: KeyboardEvent<HTMLInputElement>) {
+    // itch-style: comma or Enter commits; spaces stay inside a tag so
+    // multi-word tags ("local multiplayer") work.
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      commitTag(tagDraft);
+    } else if (e.key === "Backspace" && tagDraft === "" && tags.length > 0) {
+      setTags((prev) => prev.slice(0, -1));
+    } else if (tagErr) {
+      setTagErr(""); // clear the warning as they keep editing
+    }
+  }
+  async function onCoverPick(f: File | null) {
+    setCoverErr("");
+    if (!f) {
+      setCoverState(null);
+      return;
+    }
+    setCoverBusy(true);
+    try {
+      const prep = await prepareCover(f);
+      setCoverState({ ...prep, name: f.name });
+    } catch (e) {
+      setCoverState(null);
+      setCoverErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCoverBusy(false);
+    }
+  }
 
   const busy = phase === "working";
   const ready =
     auth.signedIn && title.trim() !== "" && rating !== null && attested && file !== null;
+
+  // itch-style autocomplete: filter the suggested vocabulary by what's typed.
+  const tagQuery = tagDraft.trim().toLowerCase();
+  const suggestedMatches = SUGGESTED_TAGS.filter(
+    (t) => !tags.includes(t) && (tagQuery === "" || t.includes(tagQuery))
+  ).slice(0, 12);
 
   async function publish() {
     const token = auth.session?.session_token_hex;
     if (!token || !file || !rating) return;
     setError("");
     setProgress(0);
+    setFileCount(null);
     setPhase("working");
+    const zipName = file.name;
     try {
-      setStatusMsg("reading the bundle…");
+      setStatusMsg(`Reading ${zipName}…`);
       const zipBytes = new Uint8Array(await file.arrayBuffer());
       const files = normalizeZip(unzipSync(zipBytes));
       validate(files);
 
-      setStatusMsg("registering…");
+      setStatusMsg("Registering…");
       const slug = await beginPublish(token, {
         title: title.trim(),
         tagline: taglineText.trim(),
         description: description.trim(),
-        tags: parseTags(tags),
+        tags: tags.slice(0, MAX_TAGS),
         rating,
+        resW,
+        resH,
       });
 
-      const totalBytes = Object.values(files).reduce((a, b) => a + b.length, 0);
+      const entries = Object.entries(files);
+      const totalBytes = entries.reduce((a, [, b]) => a + b.length, 0);
+      // Progress accumulators. JS is single-threaded, so the workers below
+      // interleave only at awaits — these increments never race.
       let sent = 0;
-      for (const [path, bytes] of Object.entries(files)) {
-        if (bytes.length === 0) {
-          await putChunk(token, slug, path, bytes); // register the empty file
-          continue;
-        }
-        for (let off = 0; off < bytes.length; off += CHUNK) {
-          const chunk = bytes.subarray(off, Math.min(off + CHUNK, bytes.length));
-          await putChunk(token, slug, path, chunk);
-          sent += chunk.length;
-          setProgress(totalBytes ? sent / totalBytes : 1);
-          setStatusMsg(`uploading ${path}`);
-        }
-      }
+      let filesDone = 0;
+      setFileCount([0, entries.length]);
+      // Show the zip the user picked, not whatever internal path is mid-flight
+      // — no one thinks in terms of "effects/Texture/Rhombus2.png".
+      setStatusMsg(`Uploading ${zipName}`);
 
-      if (coverFile) {
-        setStatusMsg("uploading cover…");
-        const cbytes = new Uint8Array(await coverFile.arrayBuffer());
+      let next = 0;
+      const worker = async () => {
+        for (;;) {
+          const i = next++;
+          if (i >= entries.length) return;
+          const [path, bytes] = entries[i];
+          if (bytes.length === 0) {
+            await putChunk(token, slug, path, bytes); // register the empty file
+          } else {
+            for (let off = 0; off < bytes.length; off += CHUNK) {
+              const chunk = bytes.subarray(off, Math.min(off + CHUNK, bytes.length));
+              await putChunk(token, slug, path, chunk); // chunks in order per file
+              sent += chunk.length;
+              setProgress(totalBytes ? sent / totalBytes : 1);
+            }
+          }
+          filesDone++;
+          setFileCount([filesDone, entries.length]);
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(UPLOAD_CONCURRENCY, entries.length) }, worker)
+      );
+
+      if (cover) {
+        setStatusMsg("Uploading cover…");
         // Non-fatal: a failed cover still leaves the game published (drawn art).
-        await setCover(token, slug, coverFile.type || "image/png", cbytes).catch(() => {});
+        await setCover(token, slug, cover.type, cover.bytes).catch(() => {});
       }
 
-      setStatusMsg("finalizing…");
+      setStatusMsg("Finalizing…");
       await finishPublish(token, slug);
       setPublishedSlug(slug);
       setPhase("done");
@@ -227,14 +373,90 @@ export default function Upload({
           </div>
 
           <div className="field">
+            <label htmlFor="up-resw">Game resolution (px)</label>
+            <div className="resinput">
+              <input
+                id="up-resw"
+                type="number"
+                min={200}
+                max={2560}
+                value={resW}
+                onChange={(e) => setResW(Number(e.target.value) || 0)}
+                disabled={busy}
+              />
+              <span aria-hidden="true">×</span>
+              <input
+                id="up-resh"
+                type="number"
+                min={200}
+                max={2560}
+                value={resH}
+                onChange={(e) => setResH(Number(e.target.value) || 0)}
+                disabled={busy}
+              />
+            </div>
+            <p className="hint">
+              Your game's native size, so it fills the player without black bars.
+              RPG Maker MZ is 816×624; 2560 max per side.
+            </p>
+          </div>
+
+          <div className="field">
             <label htmlFor="up-tags">Tags</label>
-            <input
-              id="up-tags"
-              value={tags}
-              onChange={(e) => setTags(e.target.value)}
-              placeholder="arcade, 2d, cards — up to five"
-              disabled={busy}
-            />
+            <div className="tagsinput">
+              {tags.map((t) => (
+                <span key={t} className="chip on tagchip">
+                  {t}
+                  <button
+                    type="button"
+                    className="tagx"
+                    aria-label={`remove ${t}`}
+                    onClick={() => setTags((prev) => prev.filter((x) => x !== t))}
+                    disabled={busy}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {tags.length < MAX_TAGS && (
+                <input
+                  id="up-tags"
+                  className="tagentry"
+                  value={tagDraft}
+                  onChange={(e) => {
+                    setTagDraft(e.target.value);
+                    if (tagErr) setTagErr("");
+                  }}
+                  onKeyDown={onTagKey}
+                  onBlur={() => commitTag(tagDraft)}
+                  placeholder={tags.length ? "add another…" : "type your own, or pick below"}
+                  disabled={busy}
+                />
+              )}
+            </div>
+            {tags.length < MAX_TAGS && suggestedMatches.length > 0 && (
+              <div className="tagsuggest">
+                {suggestedMatches.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    className="chip suggest"
+                    onClick={() => commitTag(t)}
+                    disabled={busy}
+                  >
+                    + {t}
+                  </button>
+                ))}
+              </div>
+            )}
+            {tagErr ? (
+              <p className="error">{tagErr}</p>
+            ) : (
+              <p className="sub">
+                Click a suggestion or type your own — Enter or comma to add · {tags.length}/
+                {MAX_TAGS}
+              </p>
+            )}
           </div>
 
           <div className="field">
@@ -295,19 +517,24 @@ export default function Upload({
           </div>
 
           <div className="field">
-            <span className="label">Cover image — optional (PNG/JPG/WebP, 2 MB max)</span>
+            <span className="label">
+              Cover image — optional (PNG/JPG/WebP · max {COVER_MAX_DIM}px · 2 MB · auto-shrunk)
+            </span>
             <label className="dropzone">
               <input
                 type="file"
                 accept="image/*"
                 style={{ display: "none" }}
-                disabled={busy}
-                onChange={(e) => setCoverFile(e.target.files?.[0] ?? null)}
+                disabled={busy || coverBusy}
+                onChange={(e) => void onCoverPick(e.target.files?.[0] ?? null)}
               />
-              {coverFile
-                ? `${coverFile.name} — click to replace`
+              {coverBusy
+                ? "processing…"
+                : cover
+                ? `${cover.name} · ${cover.w}×${cover.h} · ${(cover.bytes.length / 1024).toFixed(0)} KB — click to replace`
                 : "choose a cover, or leave it and the shelf draws one from the title"}
             </label>
+            {coverErr && <p className="error">{coverErr}</p>}
           </div>
 
           <label className="attest">
@@ -335,6 +562,7 @@ export default function Upload({
               </div>
               <p className="hint">
                 {statusMsg} · {Math.round(progress * 100)}%
+                {fileCount && ` · ${fileCount[0]}/${fileCount[1]} files`}
               </p>
             </div>
           )}

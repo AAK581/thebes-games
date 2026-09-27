@@ -415,6 +415,73 @@ button.chip {
   align-items: center;
 }
 
+/* ─── tags input (chip tokenizer) ──────────────────────────────────── */
+
+.tagsinput {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--papyrus-deep);
+  border-radius: 8px;
+  background: var(--papyrus);
+  min-height: 2.4rem;
+}
+
+.tagsinput:focus-within {
+  border-color: var(--lapis);
+}
+
+.tagchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  text-transform: none;
+}
+
+.tagx {
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  padding: 0;
+  opacity: 0.75;
+}
+
+.tagx:hover {
+  opacity: 1;
+}
+
+.tagentry {
+  flex: 1;
+  min-width: 8ch;
+  border: none;
+  outline: none;
+  background: none;
+  font: inherit;
+  color: var(--ink);
+  padding: 0.1rem 0.2rem;
+  box-shadow: none;
+}
+
+.tagsuggest {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.5rem;
+}
+
+.chip.suggest {
+  opacity: 0.85;
+}
+
+.chip.suggest:hover {
+  opacity: 1;
+}
+
 /* ─── section heads ────────────────────────────────────────────────── */
 
 .sectionhead {
@@ -1088,6 +1155,24 @@ button.chip {
   font-size: 0.78rem;
   color: var(--ink-soft);
   margin-top: 0.3rem;
+}
+
+/* Resolution: two px inputs with a × between, so a publisher types their game's
+   native size (e.g. 816 × 624) and the player frames it exactly. */
+.resinput {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.resinput input {
+  width: 6rem;
+  text-align: center;
+}
+
+.resinput span {
+  font-family: var(--mono);
+  color: var(--ink-soft);
 }
 
 .field.slugline code {

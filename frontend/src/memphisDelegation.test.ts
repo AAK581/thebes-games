@@ -183,13 +183,13 @@ describe("parseInbound", () => {
 
 describe("Candid wire format for the two new Memphis calls", () => {
   it("encOpenDelegatedArgs emits DIDL and embeds token + audience + ttl", () => {
-    const args = encOpenDelegatedArgs("00ff10", "149705289632214", 900n);
+    const args = encOpenDelegatedArgs("00ff10", "24874376952694", 900n);
     // DIDL magic
     expect(Array.from(args.slice(0, 4))).toEqual([0x44, 0x49, 0x44, 0x4c]);
     // token bytes present
     expect(indexOfBytes(args, [0x00, 0xff, 0x10])).toBeGreaterThan(-1);
     // audience text present
-    const aud = Array.from(new TextEncoder().encode("149705289632214"));
+    const aud = Array.from(new TextEncoder().encode("24874376952694"));
     expect(indexOfBytes(args, aud)).toBeGreaterThan(-1);
     // ttl 900 as nat64 LE present (0x84,0x03,0,0,0,0,0,0)
     expect(indexOfBytes(args, [0x84, 0x03, 0, 0, 0, 0, 0, 0])).toBeGreaterThan(-1);

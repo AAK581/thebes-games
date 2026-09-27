@@ -154,15 +154,19 @@ function wrapGameHtml(html: string, baseHref: string): string {
 type Phase = "idle" | "loading" | "running" | "error";
 
 /**
- * Games render into a fixed virtual desktop viewport and the iframe is
- * CSS-scaled to fit the stage. Without this, the iframe inherits the
- * article column's width (~790px) and games' own responsive headers
- * break — Basra's topbar piles its buttons over its title. 1280×800
- * matches the stage's 16:10 and is a size every embedded game already
- * handles standalone.
+ * Games render into a virtual viewport sized to the game's OWN native resolution
+ * — publisher-set at upload (e.g. RPG Maker MZ's 816×624) — and the iframe is
+ * CSS-scaled to fit the stage. The stage's aspect-ratio matches that resolution,
+ * so the game FILLS the frame instead of letterboxing (the "weird resolution"
+ * was a 4:3 game floating inside a fixed 16:10 frame). 816×624 is the fallback
+ * for games published before the field existed; clamped for safety.
  */
-const VIRTUAL_W = 1280;
-const VIRTUAL_H = 800;
+const RES_FALLBACK_W = 816;
+const RES_FALLBACK_H = 624;
+const RES_MIN = 200;
+const RES_MAX = 2560;
+const clampRes = (n: number, fallback: number) =>
+  Math.min(RES_MAX, Math.max(RES_MIN, n || fallback));
 
 /**
  * PlayerShell — where a game actually runs.
@@ -201,6 +205,8 @@ export function PlayerShell({
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [fit, setFit] = useState({ scale: 0, x: 0, y: 0 });
+  const vw = clampRes(game.resW ?? RES_FALLBACK_W, RES_FALLBACK_W);
+  const vh = clampRes(game.resH ?? RES_FALLBACK_H, RES_FALLBACK_H);
   // Where the game's files live: the platform vault (uploaded) at
   // /_/raw/<vault>/g/<slug>/, or the game's own canister at /_/raw/<cid>/.
   const gamePath = game.vaultSlug
@@ -229,18 +235,18 @@ export function PlayerShell({
     if (!el) return;
     const refit = () => {
       const r = el.getBoundingClientRect();
-      const scale = Math.min(r.width / VIRTUAL_W, r.height / VIRTUAL_H);
+      const scale = Math.min(r.width / vw, r.height / vh);
       setFit({
         scale,
-        x: (r.width - VIRTUAL_W * scale) / 2,
-        y: (r.height - VIRTUAL_H * scale) / 2,
+        x: (r.width - vw * scale) / 2,
+        y: (r.height - vh * scale) / 2,
       });
     };
     refit();
     const ro = new ResizeObserver(refit);
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [vw, vh]);
 
   async function boot() {
     if (!src || !gamePath) return;
@@ -279,7 +285,7 @@ export function PlayerShell({
   return (
     <>
     <div className="player">
-      <div className="stage" ref={stageRef}>
+      <div className="stage" ref={stageRef} style={{ aspectRatio: `${vw} / ${vh}` }}>
         {phase === "running" && doc ? (
           <iframe
             key={bootCount}
@@ -289,8 +295,8 @@ export function PlayerShell({
             sandbox="allow-scripts allow-pointer-lock allow-forms"
             allow="fullscreen; gamepad; autoplay"
             referrerPolicy="no-referrer"
-            width={VIRTUAL_W}
-            height={VIRTUAL_H}
+            width={vw}
+            height={vh}
             style={{
               transform: `translate(${fit.x}px, ${fit.y}px) scale(${fit.scale})`,
             }}

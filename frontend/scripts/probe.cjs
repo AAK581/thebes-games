@@ -3,7 +3,7 @@
 const { IDL } = require("@dfinity/candid");
 
 const GATEWAY = "https://memphis.mercaturaforum.com";
-const CID = 149705289632214;
+const CID = 24874376952694;
 
 const Rating = IDL.Variant({ E: IDL.Null, T: IDL.Null, M: IDL.Null });
 const Source = IDL.Variant({ vault: IDL.Null, canister: IDL.Text });

@@ -47,6 +47,20 @@ function pk(): Passkey {
   return p;
 }
 
+// Treat a session as gone slightly BEFORE its true expiry, so we never hand a
+// token to a publish that will out-live it mid-upload (a large game takes
+// minutes). `expires_at_ns` is nanoseconds; JS time is ms.
+const EXPIRY_SKEW_MS = 60_000;
+
+function msUntilExpiry(s: MemphisSession | null): number {
+  if (!s || !s.expires_at_ns) return Infinity; // no expiry info → don't force-out
+  return s.expires_at_ns / 1e6 - EXPIRY_SKEW_MS - Date.now();
+}
+
+function isExpired(s: MemphisSession | null): boolean {
+  return msUntilExpiry(s) <= 0;
+}
+
 export interface MemphisAuth {
   session: MemphisSession | null;
   signedIn: boolean;
@@ -74,14 +88,36 @@ export function useMemphis(): MemphisAuth {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
-  // Restore an existing session on mount.
+  // Restore an existing session on mount — but only if it hasn't lapsed. A
+  // stale token from yesterday must NOT show as signed-in (the backend would
+  // reject the publish with "not signed in" while the UI insists you're on).
   useEffect(() => {
     try {
-      setSession(pk().loadSession());
+      const s = pk().loadSession();
+      if (s && !isExpired(s)) {
+        setSession(s);
+      } else if (s) {
+        // Lapsed — clear the stored token so it doesn't resurface on reload.
+        pk().signOut().catch(() => {});
+      }
     } catch {
       /* passkey.js not present yet — leave signed out */
     }
   }, []);
+
+  // Auto sign-out the moment the live session lapses, so the UI flips to
+  // signed-out on its own instead of failing the next action.
+  useEffect(() => {
+    if (!session) return;
+    const ms = msUntilExpiry(session);
+    if (ms <= 0) {
+      setSession(null);
+      return;
+    }
+    if (ms === Infinity) return; // no expiry info
+    const timer = setTimeout(() => setSession(null), ms);
+    return () => clearTimeout(timer);
+  }, [session]);
 
   const signIn = useCallback(async (name: string) => {
     setBusy(true);
@@ -138,10 +174,11 @@ export function useMemphis(): MemphisAuth {
     }
   }, []);
 
+  const live = !!session && !isExpired(session);
   return {
-    session,
-    signedIn: !!session,
-    displayName: session?.name || session?.display_tag || "",
+    session: live ? session : null,
+    signedIn: live,
+    displayName: live ? session!.name || session!.display_tag || "" : "",
     signIn,
     pendingCreate,
     confirmCreate,

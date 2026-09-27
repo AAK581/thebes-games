@@ -28,6 +28,10 @@ export interface Game {
   updated: string;
   plays: number;
   favorites: number;
+  /** The game's native render resolution in px; the player frames the game at
+   *  exactly this so it fills the stage (no letterbox). Defaults to 816×624. */
+  resW?: number;
+  resH?: number;
   featured?: boolean;
   /** Frontend canister id of a live on-chain build, when one exists. */
   cid?: string;
