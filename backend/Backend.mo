@@ -265,6 +265,16 @@ persistent actor Backend {
   transient let MIN_RES_DIM : Nat = 200;
   transient let MAX_RES_DIM : Nat = 2560;
 
+  // Bump on every deploy. Two jobs: (1) "which build is live?" is a plain
+  // query instead of guesswork; (2) the tag changes the module bytes, so each
+  // tagged build gets a fresh wasm sha256 and therefore a fresh chunked-install
+  // upload_id — without it, a retry after a failed install resumes the SAME
+  // upload on the SAME validator (the id is derived from the hash), which
+  // pins the deploy to that validator even when it's wedged.
+  transient let BUILD_TAG : Text = "2026-09-27 my-games-listing-editor";
+
+  public query func build_tag() : async Text { BUILD_TAG };
+
   // ─── Helpers ───────────────────────────────────────────────────────────
 
   // mo:core has no toLower on Char/Text — map ASCII A–Z ourselves.

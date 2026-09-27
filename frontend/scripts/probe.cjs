@@ -52,7 +52,16 @@ async function call(method, argHex) {
 }
 
 (async () => {
-  console.log("── 1. catalogue() — is the registry live + seeded? ──");
+  console.log("── 0. build_tag() — which build is live? ──");
+  try {
+    const [tag] = IDL.decode([IDL.Text], await query("build_tag", enc([], [])));
+    console.log(`   ${tag}`);
+  } catch (e) {
+    // Builds before 2026-09-27 don't have the query.
+    console.log(`   (no build_tag — a pre-2026-09-27 build) ${e.message.slice(0, 60)}`);
+  }
+
+  console.log("\n── 1. catalogue() — is the registry live + seeded? ──");
   const [views] = IDL.decode([IDL.Vec(GameView)], await query("catalogue", enc([], [])));
   console.log(`   ${views.length} games:`);
   for (const v of views) {
