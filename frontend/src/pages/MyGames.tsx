@@ -7,8 +7,19 @@
 import { useEffect, useState } from "react";
 import type { MemphisAuth } from "../useMemphis";
 import type { Game, Rating } from "../data";
-import { myGames, unpublish, updateGame } from "../registry";
+import {
+  myGames,
+  unpublish,
+  updateGame,
+  setCover,
+  clearCover,
+  adoptableGames,
+  adoptGame,
+  amIOwner,
+} from "../registry";
 import { TagsInput, ResolutionFields, RatingPick } from "../components";
+import { prepareCover, COVER_MAX_DIM } from "../coverPrep";
+import { coverFor } from "../cover";
 
 export default function MyGames({
   auth,
@@ -21,6 +32,10 @@ export default function MyGames({
   const [games, setGames] = useState<Game[] | null>(null);
   const [msg, setMsg] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
+  // The seeded house listings nobody owns, and whether we're the one account
+  // allowed to adopt them (the backend enforces it either way).
+  const [adoptable, setAdoptable] = useState<Game[]>([]);
+  const [owner, setOwner] = useState(false);
 
   async function refresh() {
     if (!token) {
@@ -32,11 +47,27 @@ export default function MyGames({
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
     }
+    // Non-fatal: an older backend has neither call, and the page still works.
+    adoptableGames().then(setAdoptable).catch(() => setAdoptable([]));
+    amIOwner(token).then(setOwner).catch(() => setOwner(false));
   }
   useEffect(() => {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  async function adopt(slug: string) {
+    if (!token) return;
+    setMsg(`adopting ${slug}…`);
+    try {
+      await adoptGame(token, slug);
+      setMsg(`adopted ${slug} — it's yours to edit now`);
+      await refresh();
+      setEditing(slug); // straight into the editor, which is why you adopted it
+    } catch (e) {
+      setMsg("couldn't adopt: " + (e instanceof Error ? e.message : String(e)));
+    }
+  }
 
   async function remove(slug: string) {
     if (!token) return;
@@ -114,6 +145,46 @@ export default function MyGames({
             ))}
           </tbody>
         </table>
+      )}
+
+      {owner && adoptable.length > 0 && (
+        <>
+          <h2 className="sectionhead" style={{ marginTop: "2rem" }}>
+            House shelf
+          </h2>
+          <p className="sub">
+            The seeded staff listings. They were published without an owner
+            anchor, so nobody could edit them — adopt one to take over its
+            listing (cover, description, tags, rating). The public byline keeps
+            reading “{adoptable[0].owner}”.
+          </p>
+          <table className="logtable">
+            <thead>
+              <tr>
+                <th>game</th>
+                <th>served</th>
+                <th>cover</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {adoptable.map((g) => (
+                <tr key={g.slug}>
+                  <td>
+                    <a href={`#/game/${g.slug}`}>{g.title}</a>
+                  </td>
+                  <td>{g.vaultSlug ? "vault" : "canister"}</td>
+                  <td>{g.coverUrl ? "yes" : "—"}</td>
+                  <td>
+                    <button className="quiet" onClick={() => void adopt(g.slug)}>
+                      adopt
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
       )}
     </>
   );
@@ -193,13 +264,51 @@ function ListingEditor({
   const [resH, setResH] = useState(game.resH ?? 624);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  // Cover: `pending` is a newly picked image not yet uploaded; `dropCover`
+  // marks the existing one for removal on save. Both are applied by save() so
+  // the whole edit is one confirmed action rather than surprise side effects.
+  const [pending, setPending] = useState<
+    { bytes: Uint8Array; type: string; w: number; h: number; name: string } | null
+  >(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [dropCover, setDropCover] = useState(false);
+  const [coverBusy, setCoverBusy] = useState(false);
+  const [status, setStatus] = useState("");
 
   const id = (s: string) => `ed-${game.slug}-${s}`;
+
+  // Revoke the object URL when it's replaced or the editor closes — these leak
+  // the whole image otherwise.
+  useEffect(() => {
+    return () => {
+      if (preview) URL.revokeObjectURL(preview);
+    };
+  }, [preview]);
+
+  async function pickCover(f: File | null) {
+    setErr("");
+    if (!f) return;
+    setCoverBusy(true);
+    try {
+      const prep = await prepareCover(f);
+      setPending({ ...prep, name: f.name });
+      setPreview((old) => {
+        if (old) URL.revokeObjectURL(old);
+        return URL.createObjectURL(new Blob([prep.bytes], { type: prep.type }));
+      });
+      setDropCover(false); // picking a new one overrides a pending removal
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCoverBusy(false);
+    }
+  }
 
   async function save() {
     setBusy(true);
     setErr("");
     try {
+      setStatus("saving listing…");
       await updateGame(token, game.slug, {
         title: title.trim(),
         tagline: tagline.trim(),
@@ -209,12 +318,29 @@ function ListingEditor({
         resW,
         resH,
       });
+      // Cover last: the metadata is the part you'd hate to lose, and a cover
+      // upload is many chunked calls.
+      if (pending) {
+        setStatus("uploading cover…");
+        await setCover(token, game.slug, pending.type, pending.bytes);
+      } else if (dropCover && game.coverUrl) {
+        setStatus("removing cover…");
+        await clearCover(token, game.slug);
+      }
       await onSaved();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+      setStatus("");
       setBusy(false);
     }
   }
+
+  // What the shelf will show once saved.
+  const shownCover = pending
+    ? preview
+    : dropCover
+      ? coverFor(game.slug)
+      : game.coverUrl || coverFor(game.slug);
 
   return (
     <div className="editpanel">
@@ -283,10 +409,67 @@ function ListingEditor({
         />
       </div>
 
+      <div className="field">
+        <span className="label">
+          Cover image (PNG/JPG/WebP · max {COVER_MAX_DIM}px · auto-shrunk)
+        </span>
+        <div className="coveredit">
+          <img className="coverthumb" src={shownCover ?? undefined} alt="" />
+          <div className="coveredit-controls">
+            <label className="dropzone">
+              <input
+                type="file"
+                accept="image/*"
+                style={{ display: "none" }}
+                disabled={busy || coverBusy}
+                onChange={(e) => void pickCover(e.target.files?.[0] ?? null)}
+              />
+              {coverBusy
+                ? "processing…"
+                : pending
+                  ? `${pending.name} · ${pending.w}×${pending.h} · ${(pending.bytes.length / 1024).toFixed(0)} KB — click to replace`
+                  : game.coverUrl
+                    ? "choose a new cover"
+                    : "choose a cover"}
+            </label>
+            <p className="sub">
+              {pending
+                ? "Uploads when you save."
+                : dropCover
+                  ? "The cover will be removed when you save — the shelf draws one from the title."
+                  : game.coverUrl
+                    ? "This game has a cover."
+                    : "No cover — the shelf draws one from the title."}
+            </p>
+            {(game.coverUrl || pending) && (
+              <button
+                type="button"
+                className="quiet"
+                disabled={busy || coverBusy}
+                onClick={() => {
+                  if (pending) {
+                    // Just undo the pick, keeping whatever is already on chain.
+                    setPending(null);
+                    setPreview((old) => {
+                      if (old) URL.revokeObjectURL(old);
+                      return null;
+                    });
+                  } else {
+                    setDropCover((d) => !d);
+                  }
+                }}
+              >
+                {pending ? "discard new cover" : dropCover ? "keep the cover" : "remove cover"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
       {err && <p className="error">{err}</p>}
       <div className="actions">
         <button className="btn" onClick={() => void save()} disabled={busy || !title.trim()}>
-          {busy ? "Saving…" : "Save changes"}
+          {busy ? status || "Saving…" : "Save changes"}
         </button>
         <button className="btn secondary" onClick={onCancel} disabled={busy}>
           Cancel

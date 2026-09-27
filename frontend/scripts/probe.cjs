@@ -97,5 +97,23 @@ async function call(method, argHex) {
     }
   }
 
+  console.log("\n── 5. adoptable_games() — the unowned house listings ──");
+  try {
+    const [av] = IDL.decode([IDL.Vec(GameView)], await query("adoptable_games", enc([], [])));
+    if (!av.length) console.log("   none — every listing has an owner");
+    for (const v of av) console.log(`   • ${v.slug}  "${v.title}"  byline "${v.owner}"  cover ${v.cover}`);
+  } catch (e) {
+    console.log(`   ✗ adoptable_games missing — deploy is behind source (${e.message.slice(0, 50)})`);
+  }
+
+  console.log("\n── 6. adopt_game with a BOGUS token — owner-gated? ──");
+  try {
+    const ResUnit = IDL.Variant({ ok: IDL.Null, err: IDL.Text });
+    const [ar] = IDL.decode([ResUnit], await call("adopt_game", enc([Blob, IDL.Text], [bogus, "basra"])));
+    console.log("err" in ar ? `   correctly rejected: "${ar.err}"` : "   UNEXPECTED ok — ADOPT IS UNGATED");
+  } catch (e) {
+    console.log(`   ✗ adopt_game missing — deploy is behind source (${e.message.slice(0, 50)})`);
+  }
+
   console.log("\n✓ probe complete");
 })().catch((e) => { console.error("PROBE ERROR:", e.message); process.exit(1); });

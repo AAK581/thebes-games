@@ -11,6 +11,7 @@ import type { Rating } from "../data";
 import { beginPublish, putChunk, finishPublish, setCover } from "../registry";
 import { TagsInput, ResolutionFields, RatingPick } from "../components";
 import { TAG_MAX_COUNT } from "../tagPolicy";
+import { prepareCover, COVER_MAX_DIM } from "../coverPrep";
 
 // Honor the substrate's ~32 KiB chunk discipline, with headroom for the
 // Candid framing (token + slug + path) around the bytes.
@@ -29,60 +30,9 @@ const MAX_TAGS = TAG_MAX_COUNT;
 // well under the substrate's inline-block ceiling. Chunks WITHIN a file stay
 // sequential (the vault appends in arrival order); only distinct files overlap.
 const UPLOAD_CONCURRENCY = 4;
-// The cover uploads in chunks (registry.setCover) so the upload itself isn't
-// size-bound — but it's SERVED inline in one response, so downscale on the
-// client to stay under the backend's ~1.9 MB inline cap. A shelf never shows
-// more than a few hundred px, so a 6000px screenshot would waste the budget.
-const COVER_MAX_DIM = 1600; // longest side, px
-const COVER_MAX_BYTES = 1_500_000; // margin under the backend's 1.9 MB serve cap
 
 function slugify(title: string): string {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-}
-
-/** Prepared cover: decoded, dimension-clamped, under the byte cap. Downscales
-    via canvas only when needed; a small in-spec image is passed through
-    untouched so we never re-encode (and degrade) art that already fits. */
-async function prepareCover(
-  file: File
-): Promise<{ bytes: Uint8Array; type: string; w: number; h: number }> {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await new Promise<HTMLImageElement>((res, rej) => {
-      const i = new Image();
-      i.onload = () => res(i);
-      i.onerror = () => rej(new Error("that file isn't a readable image"));
-      i.src = url;
-    });
-    const w0 = img.naturalWidth;
-    const h0 = img.naturalHeight;
-    const raw = new Uint8Array(await file.arrayBuffer());
-    const scale = Math.min(1, COVER_MAX_DIM / Math.max(w0, h0));
-    if (scale === 1 && raw.length <= COVER_MAX_BYTES) {
-      return { bytes: raw, type: file.type || "image/png", w: w0, h: h0 };
-    }
-    const w = Math.max(1, Math.round(w0 * scale));
-    const h = Math.max(1, Math.round(h0 * scale));
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("couldn't process that image in this browser");
-    ctx.drawImage(img, 0, 0, w, h);
-    // WebP is the smallest broadly-supported encode; step quality down until it
-    // fits the cap.
-    let blob: Blob | null = null;
-    for (const q of [0.9, 0.82, 0.72, 0.6, 0.5]) {
-      blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/webp", q));
-      if (blob && blob.size <= COVER_MAX_BYTES) break;
-    }
-    if (!blob || blob.size > COVER_MAX_BYTES) {
-      throw new Error("couldn't shrink that cover enough — try a smaller image");
-    }
-    return { bytes: new Uint8Array(await blob.arrayBuffer()), type: blob.type || "image/webp", w, h };
-  } finally {
-    URL.revokeObjectURL(url);
-  }
 }
 
 /** Drop directory entries; if there's no root index.html but a single top

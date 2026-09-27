@@ -10,6 +10,9 @@
  *   finish_publish: (blob, text)                  -> variant { ok:text; err:text }
  *   update_game   : (blob, text, GameMeta)        -> variant { ok;      err:text }
  *   unpublish     : (blob, text)                  -> variant { ok;      err:text }
+ *   adopt_game    : (blob, text)                  -> variant { ok;      err:text }
+ *   clear_cover   : (blob, text)                  -> variant { ok;      err:text }
+ *   adoptable_games: ()                           -> vec GameView          (query)
  *   catalogue     : ()                            -> vec GameView          (query)
  *   game          : (text)                        -> opt GameView          (query)
  */
@@ -290,6 +293,33 @@ export async function setCover(
   }
   const [res] = dec([ResUnit], await callRaw("cover_commit", enc([BlobT, IDL.Text, IDL.Text], [token, slug, contentType])));
   unwrap<null>(res, "cover_commit");
+}
+
+/** Remove a game's cover (owner only) — the shelf falls back to generated art. */
+export async function clearCover(tokenHex: string, slug: string): Promise<void> {
+  const [res] = dec([ResUnit], await callRaw("clear_cover", enc([BlobT, IDL.Text], [fromHex(tokenHex), slug])));
+  unwrap<null>(res, "clear_cover");
+}
+
+// ─── house games (the seeded staff listings) ─────────────────────────────
+//
+// The three seeds were created with an empty owner anchor, so no account could
+// edit them. The platform owner adopts one to bind edit rights to their anchor;
+// the public byline keeps reading "thebes".
+
+export async function adoptableGames(): Promise<Game[]> {
+  const [views] = dec([IDL.Vec(GameViewT)], await queryRaw("adoptable_games", enc([], [])));
+  return (views as Record<string, unknown>[]).map(toGame);
+}
+
+export async function adoptGame(tokenHex: string, slug: string): Promise<void> {
+  const [res] = dec([ResUnit], await callRaw("adopt_game", enc([BlobT, IDL.Text], [fromHex(tokenHex), slug])));
+  unwrap<null>(res, "adopt_game");
+}
+
+export async function amIOwner(tokenHex: string): Promise<boolean> {
+  const [b] = dec([IDL.Bool], await callRaw("am_i_owner", enc([BlobT], [fromHex(tokenHex)])));
+  return b as boolean;
 }
 
 // ─── moderation ──────────────────────────────────────────────────────────

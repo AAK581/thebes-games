@@ -1386,6 +1386,39 @@ button.chip {
   margin-top: 0.2rem;
 }
 
+/* Cover editing: the art sits next to its controls so you can see what the
+   shelf will show before committing the change. */
+.coveredit {
+  display: flex;
+  gap: 0.9rem;
+  align-items: flex-start;
+}
+
+.coverthumb {
+  width: 8rem;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border: 1px solid var(--papyrus-deep);
+  border-radius: 8px;
+  background: var(--papyrus);
+  flex: none;
+}
+
+.coveredit-controls {
+  display: grid;
+  gap: 0.4rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.coveredit-controls .dropzone {
+  margin: 0;
+}
+
+.coveredit-controls .quiet {
+  justify-self: start;
+}
+
 /* ─── responsive ───────────────────────────────────────────────────── */
 
 @media (max-width: 56rem) {

@@ -271,7 +271,7 @@ persistent actor Backend {
   // upload_id — without it, a retry after a failed install resumes the SAME
   // upload on the SAME validator (the id is derived from the hash), which
   // pins the deploy to that validator even when it's wedged.
-  transient let BUILD_TAG : Text = "2026-09-27 my-games-listing-editor";
+  transient let BUILD_TAG : Text = "2026-09-27 adopt-house-games + cover-editing";
 
   public query func build_tag() : async Text { BUILD_TAG };
 
@@ -684,6 +684,83 @@ persistent actor Backend {
     };
   };
 
+  // ─── Adopting the house games ──────────────────────────────────────────
+  //
+  // The three seeded staff entries were created with an EMPTY ownerAnchor, and
+  // every owner gate compares `g.ownerAnchor != s.anchor` — a real Memphis
+  // anchor is never empty, so those listings were editable by nobody: no cover,
+  // no description fix, no rating change. adopt_game is the narrow escape
+  // hatch: the platform owner binds an UNOWNED listing to their own anchor,
+  // after which the ordinary owner paths (update_game, covers, unpublish) apply
+  // with no new privileged surface anywhere else. `ownerName` is deliberately
+  // left alone so the public byline keeps reading "thebes" — who may EDIT and
+  // who is CREDITED are separate questions.
+  //
+  // Strictly bounded: owner-only, and only while ownerAnchor is empty. It can
+  // never touch a game a creator actually owns.
+  public shared func adopt_game(token : Blob, slug : Text) : async {
+    #ok;
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { return #err "not signed in" };
+      case (?s) {
+        switch (platformOwner) {
+          case null { return #err "no platform owner yet — claim ownership first" };
+          case (?o) {
+            if (o != s.anchor) return #err "owner only";
+            switch (Map.get(games, Text.compare, slug)) {
+              case null { return #err "no such game" };
+              case (?g) {
+                if (g.ownerAnchor != ("" : Blob)) return #err "that game already has an owner";
+                let adopted : Game = {
+                  slug = g.slug;
+                  title = g.title;
+                  tagline = g.tagline;
+                  description = g.description;
+                  tags = g.tags;
+                  rating = g.rating;
+                  ownerAnchor = s.anchor; // edit rights move…
+                  ownerName = g.ownerName; // …the public byline does not
+                  source = g.source;
+                  var sizeBytes = g.sizeBytes;
+                  var status = g.status;
+                  createdAtNs = g.createdAtNs;
+                  var updatedAtNs = nowNs2();
+                  var finished = g.finished;
+                };
+                Map.add(games, Text.compare, slug, adopted);
+                logAction("adopt", slug, s.name, "took over an unowned house listing", 0);
+                #ok;
+              };
+            };
+          };
+        };
+      };
+    };
+  };
+
+  // The house listings still waiting to be adopted (public query — it exposes
+  // nothing the catalogue doesn't already show; the gate is on adopt_game).
+  public query func adoptable_games() : async [GameView] {
+    let out = List.empty<GameView>();
+    for (g in Map.values(games)) {
+      if (g.ownerAnchor == ("" : Blob)) List.add(out, view(g));
+    };
+    List.toArray(out);
+  };
+
+  // Is the caller the platform owner? Lets the manage page show the adopt
+  // affordance only to the one account that can actually use it.
+  public shared func am_i_owner(token : Blob) : async Bool {
+    switch (await* authed(token)) {
+      case null false;
+      case (?s) {
+        switch (platformOwner) { case (?o) o == s.anchor; case null false };
+      };
+    };
+  };
+
   // Upload / replace a cover image (owner only). Served at /g/<slug>/__cover.
   public shared func set_cover(token : Blob, slug : Text, ct : Text, bytes : Blob) : async {
     #ok;
@@ -761,6 +838,32 @@ persistent actor Backend {
                 ignore Map.delete(pendingCover, Text.compare, slug);
                 #ok;
               };
+            };
+          };
+        };
+      };
+    };
+  };
+
+  // Drop a cover (owner only) — the shelf falls back to the generated art, so
+  // this is how a creator undoes a cover rather than being stuck with it. The
+  // region bytes stay where they are (the vault is append-only; reclaiming a
+  // hole would mean compaction), only the mapping goes.
+  public shared func clear_cover(token : Blob, slug : Text) : async {
+    #ok;
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { return #err "not signed in" };
+      case (?s) {
+        switch (Map.get(games, Text.compare, slug)) {
+          case null { return #err "no such game" };
+          case (?g) {
+            if (g.ownerAnchor != s.anchor) return #err "not your game";
+            ignore Map.delete(pendingCover, Text.compare, slug);
+            switch (Map.take(coverStore, Text.compare, slug)) {
+              case null { #err "no cover to remove" };
+              case (?_) { #ok };
             };
           };
         };
