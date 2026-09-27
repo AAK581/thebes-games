@@ -8,6 +8,7 @@
  *   begin_publish : (blob, GameMeta)              -> variant { ok:text; err:text }
  *   put_chunk     : (blob, text, text, blob)      -> variant { ok:nat;  err:text }
  *   finish_publish: (blob, text)                  -> variant { ok:text; err:text }
+ *   update_game   : (blob, text, GameMeta)        -> variant { ok;      err:text }
  *   unpublish     : (blob, text)                  -> variant { ok;      err:text }
  *   catalogue     : ()                            -> vec GameView          (query)
  *   game          : (text)                        -> opt GameView          (query)
@@ -122,29 +123,44 @@ export interface MetaInput {
   resH: number;
 }
 
+/** MetaInput → the GameMeta wire record (resolution as opt nat). */
+function metaRecord(m: MetaInput) {
+  return {
+    title: m.title,
+    tagline: m.tagline,
+    description: m.description,
+    tags: m.tags,
+    rating: ratingVariant(m.rating),
+    resW: [BigInt(Math.round(m.resW))],
+    resH: [BigInt(Math.round(m.resH))],
+  };
+}
+
 // ─── publish (auth-gated, chunked) ───────────────────────────────────────
 
 export async function beginPublish(
   tokenHex: string,
   m: MetaInput
 ): Promise<string> {
-  const args = enc(
-    [BlobT, GameMetaT],
-    [
-      fromHex(tokenHex),
-      {
-        title: m.title,
-        tagline: m.tagline,
-        description: m.description,
-        tags: m.tags,
-        rating: ratingVariant(m.rating),
-        resW: [BigInt(Math.round(m.resW))],
-        resH: [BigInt(Math.round(m.resH))],
-      },
-    ]
-  );
+  const args = enc([BlobT, GameMetaT], [fromHex(tokenHex), metaRecord(m)]);
   const [res] = dec([ResText], await callRaw("begin_publish", args));
   return unwrap<string>(res, "begin_publish");
+}
+
+/** Owner-only metadata edit for a published game — title/tagline/description/
+    tags/rating/resolution, no re-upload. The slug (shelf address) never
+    changes; bytes change by re-publishing, the cover via setCover. */
+export async function updateGame(
+  tokenHex: string,
+  slug: string,
+  m: MetaInput
+): Promise<void> {
+  const args = enc(
+    [BlobT, IDL.Text, GameMetaT],
+    [fromHex(tokenHex), slug, metaRecord(m)]
+  );
+  const [res] = dec([ResUnit], await callRaw("update_game", args));
+  unwrap<null>(res, "update_game");
 }
 
 export async function putChunk(

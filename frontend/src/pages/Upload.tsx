@@ -4,12 +4,13 @@
  * canister (gated by your Memphis session), then it goes live in the registry
  * and plays from /_/raw/<vault>/g/<slug>/.
  */
-import { useState, type KeyboardEvent } from "react";
+import { useState } from "react";
 import { unzipSync } from "fflate";
 import type { MemphisAuth } from "../useMemphis";
 import type { Rating } from "../data";
 import { beginPublish, putChunk, finishPublish, setCover } from "../registry";
-import { cleanTag, TAG_MAX_COUNT } from "../tagPolicy";
+import { TagsInput, ResolutionFields, RatingPick } from "../components";
+import { TAG_MAX_COUNT } from "../tagPolicy";
 
 // Honor the substrate's ~32 KiB chunk discipline, with headroom for the
 // Candid framing (token + slug + path) around the bytes.
@@ -20,15 +21,6 @@ const MAX_TOTAL = 256 * 1024 * 1024; // 256 MB / game
 const MAX_FILE = MAX_TOTAL;
 const MAX_FILES = 4096;
 const MAX_TAGS = TAG_MAX_COUNT;
-// A starting vocabulary people can click instead of inventing their own — keeps
-// the shelf's tags consistent and browsable. Free typing still works alongside.
-const SUGGESTED_TAGS = [
-  "action", "adventure", "arcade", "platformer", "puzzle", "rpg",
-  "shooter", "strategy", "roguelike", "simulation", "racing", "fighting",
-  "horror", "survival", "sandbox", "cards", "rhythm", "visual-novel",
-  "metroidvania", "tower-defense", "2d", "3d", "pixel-art", "multiplayer",
-  "co-op", "retro", "casual", "classic", "comedy",
-];
 // Upload several files at once for throughput. The submit step is serialized
 // globally in thebes.ts (nonces MUST arrive in order or the chain rejects the
 // lower ones as replays), so this concurrency only overlaps the RECEIPT waits —
@@ -139,8 +131,6 @@ export default function Upload({
   const [taglineText, setTaglineText] = useState("");
   const [description, setDescription] = useState("");
   const [tags, setTags] = useState<string[]>([]);
-  const [tagDraft, setTagDraft] = useState("");
-  const [tagErr, setTagErr] = useState("");
   const [rating, setRating] = useState<Rating | null>(null);
   const [resW, setResW] = useState(816); // RPG Maker MZ default
   const [resH, setResH] = useState(624);
@@ -159,35 +149,6 @@ export default function Upload({
   const [error, setError] = useState("");
   const [publishedSlug, setPublishedSlug] = useState("");
 
-  function commitTag(raw: string) {
-    if (!raw.trim()) {
-      setTagDraft("");
-      return;
-    }
-    const res = cleanTag(raw);
-    setTagDraft("");
-    if (!res.ok) {
-      // Blocked or malformed (e.g. a slur / illegal-content tag) — say so, add nothing.
-      setTagErr(res.reason);
-      return;
-    }
-    setTagErr("");
-    setTags((prev) =>
-      prev.includes(res.tag) || prev.length >= MAX_TAGS ? prev : [...prev, res.tag]
-    );
-  }
-  function onTagKey(e: KeyboardEvent<HTMLInputElement>) {
-    // itch-style: comma or Enter commits; spaces stay inside a tag so
-    // multi-word tags ("local multiplayer") work.
-    if (e.key === "Enter" || e.key === ",") {
-      e.preventDefault();
-      commitTag(tagDraft);
-    } else if (e.key === "Backspace" && tagDraft === "" && tags.length > 0) {
-      setTags((prev) => prev.slice(0, -1));
-    } else if (tagErr) {
-      setTagErr(""); // clear the warning as they keep editing
-    }
-  }
   async function onCoverPick(f: File | null) {
     setCoverErr("");
     if (!f) {
@@ -209,12 +170,6 @@ export default function Upload({
   const busy = phase === "working";
   const ready =
     auth.signedIn && title.trim() !== "" && rating !== null && attested && file !== null;
-
-  // itch-style autocomplete: filter the suggested vocabulary by what's typed.
-  const tagQuery = tagDraft.trim().toLowerCase();
-  const suggestedMatches = SUGGESTED_TAGS.filter(
-    (t) => !tags.includes(t) && (tagQuery === "" || t.includes(tagQuery))
-  ).slice(0, 12);
 
   async function publish() {
     const token = auth.session?.session_token_hex;
@@ -373,28 +328,15 @@ export default function Upload({
           </div>
 
           <div className="field">
-            <label htmlFor="up-resw">Game resolution (px)</label>
-            <div className="resinput">
-              <input
-                id="up-resw"
-                type="number"
-                min={200}
-                max={2560}
-                value={resW}
-                onChange={(e) => setResW(Number(e.target.value) || 0)}
-                disabled={busy}
-              />
-              <span aria-hidden="true">×</span>
-              <input
-                id="up-resh"
-                type="number"
-                min={200}
-                max={2560}
-                value={resH}
-                onChange={(e) => setResH(Number(e.target.value) || 0)}
-                disabled={busy}
-              />
-            </div>
+            <label htmlFor="up-res-w">Game resolution (px)</label>
+            <ResolutionFields
+              w={resW}
+              h={resH}
+              onW={setResW}
+              onH={setResH}
+              disabled={busy}
+              idPrefix="up-res"
+            />
             <p className="hint">
               Your game's native size, so it fills the player without black bars.
               RPG Maker MZ is 816×624; 2560 max per side.
@@ -403,95 +345,12 @@ export default function Upload({
 
           <div className="field">
             <label htmlFor="up-tags">Tags</label>
-            <div className="tagsinput">
-              {tags.map((t) => (
-                <span key={t} className="chip on tagchip">
-                  {t}
-                  <button
-                    type="button"
-                    className="tagx"
-                    aria-label={`remove ${t}`}
-                    onClick={() => setTags((prev) => prev.filter((x) => x !== t))}
-                    disabled={busy}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-              {tags.length < MAX_TAGS && (
-                <input
-                  id="up-tags"
-                  className="tagentry"
-                  value={tagDraft}
-                  onChange={(e) => {
-                    setTagDraft(e.target.value);
-                    if (tagErr) setTagErr("");
-                  }}
-                  onKeyDown={onTagKey}
-                  onBlur={() => commitTag(tagDraft)}
-                  placeholder={tags.length ? "add another…" : "type your own, or pick below"}
-                  disabled={busy}
-                />
-              )}
-            </div>
-            {tags.length < MAX_TAGS && suggestedMatches.length > 0 && (
-              <div className="tagsuggest">
-                {suggestedMatches.map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    className="chip suggest"
-                    onClick={() => commitTag(t)}
-                    disabled={busy}
-                  >
-                    + {t}
-                  </button>
-                ))}
-              </div>
-            )}
-            {tagErr ? (
-              <p className="error">{tagErr}</p>
-            ) : (
-              <p className="sub">
-                Click a suggestion or type your own — Enter or comma to add · {tags.length}/
-                {MAX_TAGS}
-              </p>
-            )}
+            <TagsInput tags={tags} onTags={setTags} disabled={busy} id="up-tags" />
           </div>
 
           <div className="field">
             <span className="label">Rating — your declaration, on the record</span>
-            <div className="ratingpick">
-              {(["E", "T", "M"] as Rating[]).map((r) => (
-                <label key={r}>
-                  <input
-                    type="radio"
-                    name="rating"
-                    checked={rating === r}
-                    onChange={() => setRating(r)}
-                    disabled={busy}
-                  />
-                  <span>
-                    {r === "E" ? (
-                      <>
-                        <b>E · everyone</b> — no violence beyond cartoon slapstick,
-                        no strong language.
-                      </>
-                    ) : r === "T" ? (
-                      <>
-                        <b>T · teen</b> — stylized combat, mild language, tense
-                        themes.
-                      </>
-                    ) : (
-                      <>
-                        <b>M · mature</b> — realistic violence, strong language.
-                        Still no sexual content — there is no rating for that here.
-                      </>
-                    )}
-                  </span>
-                </label>
-              ))}
-            </div>
+            <RatingPick value={rating} onChange={setRating} disabled={busy} />
             <p className="sub">
               Misdeclaring a rating is a strikeable offense, judged by curator
               panel.

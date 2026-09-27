@@ -9,8 +9,8 @@ const Rating = IDL.Variant({ E: IDL.Null, T: IDL.Null, M: IDL.Null });
 const Source = IDL.Variant({ vault: IDL.Null, canister: IDL.Text });
 const Status = IDL.Variant({ live: IDL.Null, quarantined: IDL.Record({ caseId: IDL.Nat }) });
 const Blob = IDL.Vec(IDL.Nat8);
-const GameMeta = IDL.Record({ title: IDL.Text, tagline: IDL.Text, description: IDL.Text, tags: IDL.Vec(IDL.Text), rating: Rating });
-const GameView = IDL.Record({ slug: IDL.Text, title: IDL.Text, tagline: IDL.Text, description: IDL.Text, tags: IDL.Vec(IDL.Text), rating: Rating, owner: IDL.Text, source: Source, sizeBytes: IDL.Nat, updatedAtNs: IDL.Nat64, status: Status, plays: IDL.Nat, favorites: IDL.Nat, cover: IDL.Bool });
+const GameMeta = IDL.Record({ title: IDL.Text, tagline: IDL.Text, description: IDL.Text, tags: IDL.Vec(IDL.Text), rating: Rating, resW: IDL.Opt(IDL.Nat), resH: IDL.Opt(IDL.Nat) });
+const GameView = IDL.Record({ slug: IDL.Text, title: IDL.Text, tagline: IDL.Text, description: IDL.Text, tags: IDL.Vec(IDL.Text), rating: Rating, owner: IDL.Text, source: Source, sizeBytes: IDL.Nat, updatedAtNs: IDL.Nat64, status: Status, plays: IDL.Nat, favorites: IDL.Nat, cover: IDL.Bool, resW: IDL.Nat, resH: IDL.Nat });
 const ResText = IDL.Variant({ ok: IDL.Text, err: IDL.Text });
 
 const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, "0")).join("");
@@ -57,7 +57,7 @@ async function call(method, argHex) {
   console.log(`   ${views.length} games:`);
   for (const v of views) {
     const src = "vault" in v.source ? "vault" : `canister ${v.source.canister}`;
-    console.log(`   • ${v.slug}  "${v.title}"  [${Object.keys(v.rating)[0]}]  ${src}`);
+    console.log(`   • ${v.slug}  "${v.title}"  [${Object.keys(v.rating)[0]}]  ${src}  ${v.resW}×${v.resH}`);
   }
 
   console.log("\n── 2. game('basra') — single lookup ──");
@@ -66,9 +66,27 @@ async function call(method, argHex) {
 
   console.log("\n── 3. begin_publish with a BOGUS token — auth gating? ──");
   const bogus = new Uint8Array(32); // all zeros — not a real Memphis session
-  const meta = { title: "Probe", tagline: "t", description: "d", tags: ["test"], rating: { E: null } };
+  const meta = { title: "Probe", tagline: "t", description: "d", tags: ["test"], rating: { E: null }, resW: [], resH: [] };
   const [res] = IDL.decode([ResText], await call("begin_publish", enc([Blob, GameMeta], [bogus, meta])));
   console.log("err" in res ? `   correctly rejected: "${res.err}"` : `   UNEXPECTED ok: ${res.ok}`);
+
+  console.log("\n── 4. update_game with a BOGUS token — deployed + gated? ──");
+  // Also a deploy-lag detector: "method not found" here means the deployed
+  // backend predates update_game — redeploy (thebes-deploy … --upgrade).
+  try {
+    const ResUnit = IDL.Variant({ ok: IDL.Null, err: IDL.Text });
+    const [ur] = IDL.decode(
+      [ResUnit],
+      await call("update_game", enc([Blob, IDL.Text, GameMeta], [bogus, "probe-no-such-game", meta]))
+    );
+    console.log("err" in ur ? `   correctly rejected: "${ur.err}"` : `   UNEXPECTED ok`);
+  } catch (e) {
+    if (/not found/i.test(e.message)) {
+      console.log("   ✗ update_game MISSING on the deployed canister — the deploy is behind source");
+    } else {
+      throw e;
+    }
+  }
 
   console.log("\n✓ probe complete");
 })().catch((e) => { console.error("PROBE ERROR:", e.message); process.exit(1); });

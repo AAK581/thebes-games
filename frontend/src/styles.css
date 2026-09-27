@@ -1366,6 +1366,26 @@ button.chip {
   color: var(--ink);
 }
 
+/* ─── my-games inline listing editor ───────────────────────────────── */
+
+/* The expanded editor row: visually part of the row above it (no divider
+   between them), softly inset so the table reads as table + drawer. */
+.logtable tr.editrow td {
+  padding: 0;
+  background: color-mix(in srgb, var(--surface) 82%, var(--papyrus-deep));
+}
+
+.editpanel {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem 1.1rem 1.2rem;
+  border-top: 1px dashed var(--papyrus-deep);
+}
+
+.editpanel .actions {
+  margin-top: 0.2rem;
+}
+
 /* ─── responsive ───────────────────────────────────────────────────── */
 
 @media (max-width: 56rem) {

@@ -1,14 +1,16 @@
 /**
  * components.tsx — the catalogue's shared pieces: the mark, chips,
- * section heads, game cards, and the sandboxed player.
+ * section heads, game cards, the sandboxed player, and the listing-form
+ * fields (tags, rating, resolution) shared by Publish and My Games' editor.
  */
-import { useEffect, useRef, useState } from "react";
-import type { Game } from "./data";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import type { Game, Rating } from "./data";
 import type { MemphisAuth } from "./useMemphis";
 import { useDelegationBridge } from "./useDelegationBridge";
 import type { ConsentRequest } from "./useDelegationBridge";
 import { VAULT_CID, recordPlay } from "./registry";
 import { coverFor, friezeURI } from "./cover";
+import { TAG_MAX_COUNT, cleanTag } from "./tagPolicy";
 
 /** Step pyramid + sun — inline SVG because unicode hieroglyphs render
     as tofu on common platforms. */
@@ -377,6 +379,221 @@ export function PlayerShell({
     </p>
     {consent && <ConsentDialog consent={consent} />}
     </>
+  );
+}
+
+/* ─── listing-form fields — shared by Publish and My Games' editor ────── */
+
+// A starting vocabulary people can click instead of inventing their own — keeps
+// the shelf's tags consistent and browsable. Free typing still works alongside.
+const SUGGESTED_TAGS = [
+  "action", "adventure", "arcade", "platformer", "puzzle", "rpg",
+  "shooter", "strategy", "roguelike", "simulation", "racing", "fighting",
+  "horror", "survival", "sandbox", "cards", "rhythm", "visual-novel",
+  "metroidvania", "tower-defense", "2d", "3d", "pixel-art", "multiplayer",
+  "co-op", "retro", "casual", "classic", "comedy",
+];
+
+/**
+ * Chip tokenizer for tags, itch-style: comma or Enter commits, Backspace on an
+ * empty entry pops the last chip, suggestions filter as you type. Entries run
+ * through tagPolicy (instant feedback; the backend enforces the same rules as
+ * the guarantee). Renders the field BODY only — the caller owns the
+ * surrounding .field, label, and hint line.
+ */
+export function TagsInput({
+  tags,
+  onTags,
+  disabled = false,
+  id = "tags",
+}: {
+  tags: string[];
+  onTags: (next: string[]) => void;
+  disabled?: boolean;
+  id?: string;
+}) {
+  const [draft, setDraft] = useState("");
+  const [err, setErr] = useState("");
+
+  function commit(raw: string) {
+    if (!raw.trim()) {
+      setDraft("");
+      return;
+    }
+    const res = cleanTag(raw);
+    setDraft("");
+    if (!res.ok) {
+      // Blocked or malformed (e.g. a slur / illegal-content tag) — say so, add nothing.
+      setErr(res.reason);
+      return;
+    }
+    setErr("");
+    if (!tags.includes(res.tag) && tags.length < TAG_MAX_COUNT)
+      onTags([...tags, res.tag]);
+  }
+  function onKey(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      commit(draft);
+    } else if (e.key === "Backspace" && draft === "" && tags.length > 0) {
+      onTags(tags.slice(0, -1));
+    } else if (err) {
+      setErr(""); // clear the warning as they keep editing
+    }
+  }
+
+  const q = draft.trim().toLowerCase();
+  const suggested = SUGGESTED_TAGS.filter(
+    (t) => !tags.includes(t) && (q === "" || t.includes(q))
+  ).slice(0, 12);
+
+  return (
+    <>
+      <div className="tagsinput">
+        {tags.map((t) => (
+          <span key={t} className="chip on tagchip">
+            {t}
+            <button
+              type="button"
+              className="tagx"
+              aria-label={`remove ${t}`}
+              onClick={() => onTags(tags.filter((x) => x !== t))}
+              disabled={disabled}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        {tags.length < TAG_MAX_COUNT && (
+          <input
+            id={id}
+            className="tagentry"
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              if (err) setErr("");
+            }}
+            onKeyDown={onKey}
+            onBlur={() => commit(draft)}
+            placeholder={tags.length ? "add another…" : "type your own, or pick below"}
+            disabled={disabled}
+          />
+        )}
+      </div>
+      {tags.length < TAG_MAX_COUNT && suggested.length > 0 && (
+        <div className="tagsuggest">
+          {suggested.map((t) => (
+            <button
+              key={t}
+              type="button"
+              className="chip suggest"
+              onClick={() => commit(t)}
+              disabled={disabled}
+            >
+              + {t}
+            </button>
+          ))}
+        </div>
+      )}
+      {err ? (
+        <p className="error">{err}</p>
+      ) : (
+        <p className="sub">
+          Click a suggestion or type your own — Enter or comma to add · {tags.length}/
+          {TAG_MAX_COUNT}
+        </p>
+      )}
+    </>
+  );
+}
+
+/** The two native-resolution px inputs with a × between. The caller owns the
+    label and hint; the backend clamps to the same 200–2560 bounds. */
+export function ResolutionFields({
+  w,
+  h,
+  onW,
+  onH,
+  disabled = false,
+  idPrefix = "res",
+}: {
+  w: number;
+  h: number;
+  onW: (n: number) => void;
+  onH: (n: number) => void;
+  disabled?: boolean;
+  idPrefix?: string;
+}) {
+  return (
+    <div className="resinput">
+      <input
+        id={`${idPrefix}-w`}
+        type="number"
+        min={200}
+        max={2560}
+        value={w}
+        onChange={(e) => onW(Number(e.target.value) || 0)}
+        disabled={disabled}
+      />
+      <span aria-hidden="true">×</span>
+      <input
+        id={`${idPrefix}-h`}
+        type="number"
+        min={200}
+        max={2560}
+        value={h}
+        onChange={(e) => onH(Number(e.target.value) || 0)}
+        disabled={disabled}
+      />
+    </div>
+  );
+}
+
+/** The rating declaration — full descriptions on purpose: changing a rating is
+    the same on-the-record declaration as making it at publish time. */
+export function RatingPick({
+  value,
+  onChange,
+  disabled = false,
+  name = "rating",
+}: {
+  value: Rating | null;
+  onChange: (r: Rating) => void;
+  disabled?: boolean;
+  name?: string;
+}) {
+  return (
+    <div className="ratingpick">
+      {(["E", "T", "M"] as Rating[]).map((r) => (
+        <label key={r}>
+          <input
+            type="radio"
+            name={name}
+            checked={value === r}
+            onChange={() => onChange(r)}
+            disabled={disabled}
+          />
+          <span>
+            {r === "E" ? (
+              <>
+                <b>E · everyone</b> — no violence beyond cartoon slapstick,
+                no strong language.
+              </>
+            ) : r === "T" ? (
+              <>
+                <b>T · teen</b> — stylized combat, mild language, tense
+                themes.
+              </>
+            ) : (
+              <>
+                <b>M · mature</b> — realistic violence, strong language.
+                Still no sexual content — there is no rating for that here.
+              </>
+            )}
+          </span>
+        </label>
+      ))}
+    </div>
   );
 }
 
