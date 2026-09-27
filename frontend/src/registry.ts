@@ -56,6 +56,7 @@ const GameViewT = IDL.Record({
   plays: IDL.Nat,
   favorites: IDL.Nat,
   cover: IDL.Bool,
+  shots: IDL.Nat,
   resW: IDL.Nat,
   resH: IDL.Nat,
 });
@@ -240,6 +241,9 @@ function toGame(v: any): Game {
     cid: canisterCid,
     vaultSlug,
     coverUrl: v.cover ? `/_/raw/${VAULT_CID}/g/${v.slug}/__cover` : undefined,
+    shotUrls: Array.from({ length: Number(v.shots as bigint) }, (_, i) =>
+      shotUrl(v.slug as string, i)
+    ),
     resW: Number(v.resW as bigint),
     resH: Number(v.resH as bigint),
   };
@@ -293,6 +297,43 @@ export async function setCover(
   }
   const [res] = dec([ResUnit], await callRaw("cover_commit", enc([BlobT, IDL.Text, IDL.Text], [token, slug, contentType])));
   unwrap<null>(res, "cover_commit");
+}
+
+// ─── screenshots ─────────────────────────────────────────────────────────
+
+/** Where screenshot `i` of a game is served. */
+export function shotUrl(slug: string, i: number): string {
+  return `/_/raw/${VAULT_CID}/g/${slug}/__shot/${i}`;
+}
+
+/** The backend's gallery cap — the UI stops offering "add" at this count. */
+export const MAX_SHOTS = 6;
+
+/** Append a screenshot (owner only), chunked like a cover. Returns the new count. */
+export async function addShot(
+  tokenHex: string,
+  slug: string,
+  contentType: string,
+  bytes: Uint8Array
+): Promise<number> {
+  if (bytes.length === 0) throw new Error("empty screenshot");
+  const token = fromHex(tokenHex);
+  for (let off = 0; off < bytes.length; off += COVER_CHUNK) {
+    const chunk = bytes.subarray(off, Math.min(off + COVER_CHUNK, bytes.length));
+    const [res] = dec([ResNat], await callRaw("shot_chunk", enc([BlobT, IDL.Text, BlobT], [token, slug, chunk])));
+    unwrap<bigint>(res, "shot_chunk");
+  }
+  const [res] = dec([ResNat], await callRaw("shot_commit", enc([BlobT, IDL.Text, IDL.Text], [token, slug, contentType])));
+  return Number(unwrap<bigint>(res, "shot_commit"));
+}
+
+/** Remove screenshot `index` (owner only). Returns the remaining count. */
+export async function removeShot(tokenHex: string, slug: string, index: number): Promise<number> {
+  const [res] = dec(
+    [ResNat],
+    await callRaw("remove_shot", enc([BlobT, IDL.Text, IDL.Nat], [fromHex(tokenHex), slug, BigInt(index)]))
+  );
+  return Number(unwrap<bigint>(res, "remove_shot"));
 }
 
 /** Remove a game's cover (owner only) — the shelf falls back to generated art. */

@@ -44,6 +44,8 @@ export interface Game {
   vaultSlug?: string;
   /** Creator-uploaded cover image URL (vault-served), when one exists. */
   coverUrl?: string;
+  /** Creator-uploaded screenshots, in gallery order (vault-served). */
+  shotUrls?: string[];
   /**
    * Backend canister id, when the game has one. This is the AUDIENCE a
    * Memphis delegated session is scoped to (docs/memphis-delegated-sessions.md,

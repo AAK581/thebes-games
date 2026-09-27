@@ -354,7 +354,9 @@ export function PlayerShell({
             </button>
           </>
         ) : (
-          <span className="chip">{game.sizeMB.toFixed(1)} MB</span>
+          // Only when we actually know it: a game hosted in its own canister
+          // has no size in the registry, and "0.0 MB" is a lie.
+          game.sizeMB > 0 && <span className="chip">{game.sizeMB.toFixed(1)} MB</span>
         )}
         <span className="spacer" />
         <a

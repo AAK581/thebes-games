@@ -1419,6 +1419,98 @@ button.chip {
   justify-self: start;
 }
 
+/* ─── screenshots ──────────────────────────────────────────────────── */
+
+/* Editor: thumbnails with a remove corner. */
+.shotedit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.shotedit-item {
+  position: relative;
+  width: 7.5rem;
+  aspect-ratio: 16 / 9;
+}
+
+.shotedit-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border: 1px solid var(--papyrus-deep);
+  border-radius: 6px;
+  background: var(--papyrus);
+}
+
+.shotedit-item .tagx {
+  position: absolute;
+  top: -0.4rem;
+  right: -0.4rem;
+  width: 1.3rem;
+  height: 1.3rem;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--papyrus-deep);
+  opacity: 1;
+}
+
+/* Game page: a strip under the player, click to enlarge. */
+.shotstrip {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.shotthumb {
+  padding: 0;
+  border: 1px solid var(--papyrus-deep);
+  border-radius: 6px;
+  overflow: hidden;
+  background: none;
+  cursor: zoom-in;
+  width: 9rem;
+  aspect-ratio: 16 / 9;
+}
+
+.shotthumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.shotveil {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.82);
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  cursor: zoom-out;
+}
+
+.shotveil img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.shotclose {
+  position: absolute;
+  top: 1rem;
+  right: 1.25rem;
+  font-size: 1.6rem;
+  line-height: 1;
+  color: var(--ink);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
 /* ─── responsive ───────────────────────────────────────────────────── */
 
 @media (max-width: 56rem) {

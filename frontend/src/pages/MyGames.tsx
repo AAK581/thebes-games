@@ -16,6 +16,10 @@ import {
   adoptableGames,
   adoptGame,
   amIOwner,
+  addShot,
+  removeShot,
+  shotUrl,
+  MAX_SHOTS,
 } from "../registry";
 import { TagsInput, ResolutionFields, RatingPick } from "../components";
 import { prepareCover, COVER_MAX_DIM } from "../coverPrep";
@@ -121,7 +125,7 @@ export default function MyGames({
               <th>status</th>
               <th>plays</th>
               <th>★</th>
-              <th>served</th>
+              <th>shots</th>
               <th></th>
             </tr>
           </thead>
@@ -162,8 +166,8 @@ export default function MyGames({
             <thead>
               <tr>
                 <th>game</th>
-                <th>served</th>
                 <th>cover</th>
+                <th>shots</th>
                 <th></th>
               </tr>
             </thead>
@@ -173,8 +177,8 @@ export default function MyGames({
                   <td>
                     <a href={`#/game/${g.slug}`}>{g.title}</a>
                   </td>
-                  <td>{g.vaultSlug ? "vault" : "canister"}</td>
                   <td>{g.coverUrl ? "yes" : "—"}</td>
+                  <td>{g.shotUrls?.length || "—"}</td>
                   <td>
                     <button className="quiet" onClick={() => void adopt(g.slug)}>
                       adopt
@@ -220,7 +224,7 @@ function GameRow({
         </td>
         <td>{game.plays}</td>
         <td>{game.favorites}</td>
-        <td>{game.vaultSlug ? "vault" : "canister"}</td>
+        <td>{game.shotUrls?.length || "—"}</td>
         <td>
           <button className="quiet" onClick={onToggleEdit}>
             {editing ? "close" : "edit"}
@@ -466,6 +470,8 @@ function ListingEditor({
         </div>
       </div>
 
+      <ShotsEditor game={game} token={token} disabled={busy} />
+
       {err && <p className="error">{err}</p>}
       <div className="actions">
         <button className="btn" onClick={() => void save()} disabled={busy || !title.trim()}>
@@ -475,6 +481,118 @@ function ListingEditor({
           Cancel
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Screenshots — the gallery shown on the game's page. Unlike the rest of the
+ * editor these apply IMMEDIATELY rather than on save: each one is its own
+ * chunked upload, so batching them behind the save button would mean a single
+ * failure losing several minutes of work with nothing to show for it. The
+ * count is the backend's own answer, re-read after every change.
+ */
+function ShotsEditor({
+  game,
+  token,
+  disabled,
+}: {
+  game: Game;
+  token: string;
+  disabled: boolean;
+}) {
+  const [urls, setUrls] = useState<string[]>(game.shotUrls ?? []);
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+  // Cache-buster: removing shot 0 shifts every later index down, so the URLs
+  // stay the same while the images behind them change. Without this the
+  // browser shows the pre-delete gallery from cache.
+  const [rev, setRev] = useState(0);
+
+  const refreshFromCount = (n: number) => {
+    setUrls(Array.from({ length: n }, (_, i) => shotUrl(game.slug, i)));
+    setRev((r) => r + 1);
+  };
+
+  async function add(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setErr("");
+    const room = MAX_SHOTS - urls.length;
+    const picked = Array.from(files).slice(0, Math.max(0, room));
+    if (files.length > room) {
+      setErr(`only ${MAX_SHOTS} screenshots per game — taking the first ${room}`);
+    }
+    for (const [i, f] of picked.entries()) {
+      try {
+        setBusy(`preparing ${f.name}…`);
+        const prep = await prepareCover(f); // same limits as a cover
+        setBusy(`uploading ${f.name} (${i + 1}/${picked.length})…`);
+        refreshFromCount(await addShot(token, game.slug, prep.type, prep.bytes));
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+        break;
+      }
+    }
+    setBusy("");
+  }
+
+  async function drop(index: number) {
+    setErr("");
+    setBusy("removing…");
+    try {
+      refreshFromCount(await removeShot(token, game.slug, index));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+    setBusy("");
+  }
+
+  const full = urls.length >= MAX_SHOTS;
+  return (
+    <div className="field">
+      <span className="label">
+        Screenshots — up to {MAX_SHOTS}, shown on the game's page ({urls.length}/{MAX_SHOTS})
+      </span>
+      {urls.length > 0 && (
+        <div className="shotedit">
+          {urls.map((u, i) => (
+            <div key={u} className="shotedit-item">
+              <img src={`${u}?v=${rev}`} alt={`screenshot ${i + 1}`} />
+              <button
+                type="button"
+                className="tagx"
+                aria-label={`remove screenshot ${i + 1}`}
+                disabled={disabled || busy !== ""}
+                onClick={() => void drop(i)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {!full && (
+        <label className="dropzone">
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            style={{ display: "none" }}
+            disabled={disabled || busy !== ""}
+            onChange={(e) => {
+              void add(e.target.files);
+              e.target.value = ""; // let the same file be picked again after a failure
+            }}
+          />
+          {busy || "add screenshots — pick one or several"}
+        </label>
+      )}
+      <p className="sub">
+        {full
+          ? `That's the maximum of ${MAX_SHOTS}. Remove one to add another.`
+          : "Large images are shrunk automatically. These apply immediately — no need to save."}
+      </p>
+      {err && <p className="error">{err}</p>}
     </div>
   );
 }

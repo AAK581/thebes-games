@@ -74,6 +74,7 @@ persistent actor Backend {
     plays : Nat;
     favorites : Nat;
     cover : Bool; // true when the creator uploaded a cover image
+    shots : Nat; // how many screenshots, served at /g/<slug>/__shot/<i>
     resW : Nat; // native resolution the player frames the game at (fills, no letterbox)
     resH : Nat;
   };
@@ -101,6 +102,9 @@ persistent actor Backend {
 
   type FileRef = { offset : Nat64; length : Nat };
   type Cover = { ct : Text; offset : Nat64; length : Nat };
+  // A screenshot — same shape as a cover, stored in the same region. Kept in
+  // an ordered list per game so the gallery has a stable, creator-chosen order.
+  type Shot = { ct : Text; offset : Nat64; length : Nat };
 
   // ─── Moderation ────────────────────────────────────────────────────────
   type Verdict = { #restore; #delist };
@@ -218,10 +222,15 @@ persistent actor Backend {
   // ingress ceiling (a whole-image set_cover call 413s past ~256 KB), then
   // cover_commit assembles it into the region.
   transient let pendingCover = Map.empty<Text, List.List<Blob>>();
+  // slug → screenshot chunks in flight (transient, same rationale as `pending`).
+  transient let pendingShot = Map.empty<Text, List.List<Blob>>();
   // slug → set of anchors that favorited it
   let favorites = Map.empty<Text, Set.Set<Blob>>();
   // slug → cover image (served at /g/<slug>/__cover)
   let coverStore = Map.empty<Text, Cover>();
+  // slug → ordered screenshots (served at /g/<slug>/__shot/<i>). A separate
+  // top-level stable var, like every other post-launch addition.
+  let shotStore = Map.empty<Text, List.List<Shot>>();
   // slug → the game's native resolution (px). The player frames the game at
   // exactly this so it fills the stage instead of letterboxing. A separate map,
   // not a Game field — a new top-level stable var is upgrade-safe (plays note).
@@ -255,6 +264,13 @@ persistent actor Backend {
   // file path chunks at.
   transient let MAX_COVER_BYTES : Nat = 1_900_000;
   transient let MAX_COVER_CHUNKS : Nat = 128; // bounds in-flight cover memory
+  // Screenshots. Each is served inline in ONE response like a cover, so it
+  // carries the same per-image ceiling; the count cap is what bounds a game's
+  // total gallery (6 × 1.9 MB worst case) and keeps the page honest — a shelf
+  // listing is not an image host.
+  transient let MAX_SHOTS : Nat = 6;
+  transient let MAX_SHOT_BYTES : Nat = 1_900_000;
+  transient let MAX_SHOT_CHUNKS : Nat = 128;
   transient let SERVE_CHUNK : Nat = 1_900_000; // bytes per streamed response chunk
   transient let MAX_FILES : Nat = 4096;
   transient let MAX_CHUNK_BYTES : Nat = 64 * 1024; // one put_chunk
@@ -271,7 +287,7 @@ persistent actor Backend {
   // upload_id — without it, a retry after a failed install resumes the SAME
   // upload on the SAME validator (the id is derived from the hash), which
   // pins the deploy to that validator even when it's wedged.
-  transient let BUILD_TAG : Text = "2026-09-27 adopt-house-games + cover-editing";
+  transient let BUILD_TAG : Text = "2026-09-27 screenshots";
 
   public query func build_tag() : async Text { BUILD_TAG };
 
@@ -427,6 +443,10 @@ persistent actor Backend {
       cover = switch (Map.get(coverStore, Text.compare, g.slug)) {
         case (?_) true;
         case null false;
+      };
+      shots = switch (Map.get(shotStore, Text.compare, g.slug)) {
+        case (?l) List.size(l);
+        case null 0;
       };
       resW = res.w;
       resH = res.h;
@@ -602,8 +622,10 @@ persistent actor Backend {
             ignore Map.delete(fileStore, Text.compare, slug);
             ignore Map.delete(pending, Text.compare, slug);
             ignore Map.delete(pendingCover, Text.compare, slug);
+            ignore Map.delete(pendingShot, Text.compare, slug);
             ignore Map.delete(favorites, Text.compare, slug);
             ignore Map.delete(coverStore, Text.compare, slug);
+            ignore Map.delete(shotStore, Text.compare, slug);
             ignore Map.delete(gameRes, Text.compare, slug);
             ignore Map.delete(playCounts, Text.compare, slug);
             #ok;
@@ -871,6 +893,122 @@ persistent actor Backend {
     };
   };
 
+  // ─── Screenshots ───────────────────────────────────────────────────────
+  //
+  // Same chunked motion as covers (a whole image in one call exceeds the node's
+  // inline ingress ceiling): shot_chunk × N, then shot_commit appends the
+  // assembled image to the game's gallery. Served at /g/<slug>/__shot/<i>.
+
+  public shared func shot_chunk(token : Blob, slug : Text, chunk : Blob) : async {
+    #ok : Nat; // chunks buffered so far
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { return #err "not signed in" };
+      case (?s) {
+        switch (Map.get(games, Text.compare, slug)) {
+          case null { return #err "no such game" };
+          case (?g) {
+            if (g.ownerAnchor != s.anchor) return #err "not your game";
+            // Refuse early rather than after a long upload.
+            let have = switch (Map.get(shotStore, Text.compare, slug)) {
+              case (?l) List.size(l);
+              case null 0;
+            };
+            if (have >= MAX_SHOTS) return #err ("at most " # Nat.toText(MAX_SHOTS) # " screenshots");
+            if (Blob.size(chunk) > MAX_CHUNK_BYTES) return #err "chunk too large (64 KiB max)";
+            let chunks = switch (Map.get(pendingShot, Text.compare, slug)) {
+              case (?c) c;
+              case null { let c = List.empty<Blob>(); Map.add(pendingShot, Text.compare, slug, c); c };
+            };
+            if (List.size(chunks) >= MAX_SHOT_CHUNKS) return #err "screenshot too large (~1.9 MB max)";
+            List.add(chunks, chunk);
+            #ok (List.size(chunks));
+          };
+        };
+      };
+    };
+  };
+
+  public shared func shot_commit(token : Blob, slug : Text, ct : Text) : async {
+    #ok : Nat; // the new screenshot count
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { return #err "not signed in" };
+      case (?s) {
+        switch (Map.get(games, Text.compare, slug)) {
+          case null { return #err "no such game" };
+          case (?g) {
+            if (g.ownerAnchor != s.anchor) return #err "not your game";
+            switch (Map.get(pendingShot, Text.compare, slug)) {
+              case null { return #err "no screenshot upload in progress" };
+              case (?chunks) {
+                var total : Nat = 0;
+                for (c in List.values(chunks)) total += Blob.size(c);
+                if (total == 0) {
+                  ignore Map.delete(pendingShot, Text.compare, slug);
+                  return #err "empty screenshot";
+                };
+                if (total > MAX_SHOT_BYTES) {
+                  ignore Map.delete(pendingShot, Text.compare, slug);
+                  return #err "screenshot too large (~1.9 MB max)";
+                };
+                let gallery = switch (Map.get(shotStore, Text.compare, slug)) {
+                  case (?l) l;
+                  case null { let l = List.empty<Shot>(); Map.add(shotStore, Text.compare, slug, l); l };
+                };
+                if (List.size(gallery) >= MAX_SHOTS) {
+                  ignore Map.delete(pendingShot, Text.compare, slug);
+                  return #err ("at most " # Nat.toText(MAX_SHOTS) # " screenshots");
+                };
+                let start = vaultTop; var length : Nat = 0;
+                for (c in List.values(chunks)) { let r = regionAppend(c); length += r.length };
+                List.add(gallery, { ct; offset = start; length });
+                ignore Map.delete(pendingShot, Text.compare, slug);
+                #ok (List.size(gallery));
+              };
+            };
+          };
+        };
+      };
+    };
+  };
+
+  // Drop one screenshot by index; the rest close ranks (the gallery is ordered,
+  // so indices shift — the frontend re-reads the count after every change).
+  public shared func remove_shot(token : Blob, slug : Text, index : Nat) : async {
+    #ok : Nat; // remaining count
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { return #err "not signed in" };
+      case (?s) {
+        switch (Map.get(games, Text.compare, slug)) {
+          case null { return #err "no such game" };
+          case (?g) {
+            if (g.ownerAnchor != s.anchor) return #err "not your game";
+            switch (Map.get(shotStore, Text.compare, slug)) {
+              case null { return #err "no screenshots" };
+              case (?gallery) {
+                let arr = List.toArray(gallery);
+                if (index >= arr.size()) return #err "no screenshot at that index";
+                let kept = List.empty<Shot>();
+                var i : Nat = 0;
+                for (sh in arr.values()) {
+                  if (i != index) List.add(kept, sh);
+                  i += 1;
+                };
+                Map.add(shotStore, Text.compare, slug, kept);
+                #ok (List.size(kept));
+              };
+            };
+          };
+        };
+      };
+    };
+  };
+
   // Owner-only metadata edit for a published game — title / tagline / description
   // / tags / rating / resolution. Bytes are managed via re-upload; the cover via
   // cover_chunk/commit. Lets a creator fix a listing without re-uploading it.
@@ -1130,6 +1268,7 @@ persistent actor Backend {
                   ignore Map.delete(games, Text.compare, c.slug);
                   ignore Map.delete(fileStore, Text.compare, c.slug);
                   ignore Map.delete(coverStore, Text.compare, c.slug);
+                  ignore Map.delete(shotStore, Text.compare, c.slug);
                   ignore Map.delete(favorites, Text.compare, c.slug);
                 };
                 case null {};
@@ -1279,6 +1418,33 @@ persistent actor Backend {
     let slug = segs[1];
     let file = if (segs.size() == 2) "index.html" else {
       Text.join(Iter.fromArray(Array.sliceToArray(segs, 2, segs.size())), "/");
+    };
+    // A screenshot: /g/<slug>/__shot/<i>, served inline like a cover.
+    if (Text.startsWith(file, #text "__shot/")) {
+      let idxText = Text.replace(file, #text "__shot/", "");
+      switch (Nat.fromText(idxText)) {
+        case null { return notFound("bad screenshot index '" # idxText # "'") };
+        case (?i) {
+          switch (Map.get(shotStore, Text.compare, slug)) {
+            case null { return notFound("no screenshots for '" # slug # "'") };
+            case (?gallery) {
+              let arr = List.toArray(gallery);
+              if (i >= arr.size()) return notFound("no screenshot " # idxText);
+              let sh = arr[i];
+              return {
+                status_code = 200;
+                headers = [
+                  ("content-type", sh.ct),
+                  ("access-control-allow-origin", "*"),
+                  ("cache-control", "public, max-age=300"),
+                ];
+                body = Region.loadBlob(vaultRegion, sh.offset, sh.length);
+                streaming_strategy = null;
+              };
+            };
+          };
+        };
+      };
     };
     // The creator's cover image (if any) is served from its own store.
     if (file == "__cover") {

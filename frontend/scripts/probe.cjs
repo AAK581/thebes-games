@@ -10,7 +10,7 @@ const Source = IDL.Variant({ vault: IDL.Null, canister: IDL.Text });
 const Status = IDL.Variant({ live: IDL.Null, quarantined: IDL.Record({ caseId: IDL.Nat }) });
 const Blob = IDL.Vec(IDL.Nat8);
 const GameMeta = IDL.Record({ title: IDL.Text, tagline: IDL.Text, description: IDL.Text, tags: IDL.Vec(IDL.Text), rating: Rating, resW: IDL.Opt(IDL.Nat), resH: IDL.Opt(IDL.Nat) });
-const GameView = IDL.Record({ slug: IDL.Text, title: IDL.Text, tagline: IDL.Text, description: IDL.Text, tags: IDL.Vec(IDL.Text), rating: Rating, owner: IDL.Text, source: Source, sizeBytes: IDL.Nat, updatedAtNs: IDL.Nat64, status: Status, plays: IDL.Nat, favorites: IDL.Nat, cover: IDL.Bool, resW: IDL.Nat, resH: IDL.Nat });
+const GameView = IDL.Record({ slug: IDL.Text, title: IDL.Text, tagline: IDL.Text, description: IDL.Text, tags: IDL.Vec(IDL.Text), rating: Rating, owner: IDL.Text, source: Source, sizeBytes: IDL.Nat, updatedAtNs: IDL.Nat64, status: Status, plays: IDL.Nat, favorites: IDL.Nat, cover: IDL.Bool, shots: IDL.Nat, resW: IDL.Nat, resH: IDL.Nat });
 const ResText = IDL.Variant({ ok: IDL.Text, err: IDL.Text });
 
 const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, "0")).join("");
@@ -113,6 +113,20 @@ async function call(method, argHex) {
     console.log("err" in ar ? `   correctly rejected: "${ar.err}"` : "   UNEXPECTED ok — ADOPT IS UNGATED");
   } catch (e) {
     console.log(`   ✗ adopt_game missing — deploy is behind source (${e.message.slice(0, 50)})`);
+  }
+
+  console.log("\n── 7. screenshots — deployed + owner-gated? ──");
+  try {
+    const ResNat = IDL.Variant({ ok: IDL.Nat, err: IDL.Text });
+    const [sr] = IDL.decode(
+      [ResNat],
+      await call("shot_chunk", enc([Blob, IDL.Text, Blob], [bogus, "basra", new Uint8Array(8)]))
+    );
+    console.log("err" in sr ? `   correctly rejected: "${sr.err}"` : "   UNEXPECTED ok — SHOTS ARE UNGATED");
+    const [vs] = IDL.decode([IDL.Vec(GameView)], await query("catalogue", enc([], [])));
+    console.log("   gallery counts: " + vs.map((v) => `${v.slug}=${v.shots}`).join("  "));
+  } catch (e) {
+    console.log(`   ✗ screenshots missing — deploy is behind source (${e.message.slice(0, 50)})`);
   }
 
   console.log("\n✓ probe complete");

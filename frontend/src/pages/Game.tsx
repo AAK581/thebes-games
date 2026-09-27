@@ -133,6 +133,10 @@ export default function GamePage({
             />
           )}
 
+          {g.shotUrls && g.shotUrls.length > 0 && (
+            <ShotGallery urls={g.shotUrls} title={g.title} />
+          )}
+
           <div className="prose">
             <p>{game.description}</p>
           </div>
@@ -154,14 +158,6 @@ export default function GamePage({
             <dd>{g.plays}</dd>
             <dt>favorites</dt>
             <dd>★ {favCount}</dd>
-            <dt>served</dt>
-            <dd>{g.vaultSlug ? "vault" : g.cid ? "own canister" : "—"}</dd>
-            {g.cid && (
-              <>
-                <dt>canister</dt>
-                <dd>{g.cid}</dd>
-              </>
-            )}
           </dl>
           <div className="chiprow">
             {g.tags.map((t) => (
@@ -182,6 +178,43 @@ export default function GamePage({
           {reportMsg && <p className="hint">{reportMsg}</p>}
         </aside>
       </div>
+    </>
+  );
+}
+
+/** The creator's screenshots: a strip of thumbnails, click to open one full
+    size. Kept below the player — you came to play, not to browse stills. */
+function ShotGallery({ urls, title }: { urls: string[]; title: string }) {
+  const [open, setOpen] = useState<number | null>(null);
+  return (
+    <>
+      <div className="shotstrip">
+        {urls.map((u, i) => (
+          <button
+            key={u}
+            type="button"
+            className="shotthumb"
+            onClick={() => setOpen(i)}
+            aria-label={`${title} screenshot ${i + 1} of ${urls.length}`}
+          >
+            <img src={u} alt="" loading="lazy" />
+          </button>
+        ))}
+      </div>
+      {open !== null && (
+        <div
+          className="shotveil"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${title} screenshot ${open + 1}`}
+          onClick={() => setOpen(null)}
+        >
+          <img src={urls[open]} alt="" />
+          <button className="shotclose" type="button" aria-label="close">
+            ×
+          </button>
+        </div>
+      )}
     </>
   );
 }
