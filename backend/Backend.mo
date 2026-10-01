@@ -287,7 +287,7 @@ persistent actor Backend {
   // upload_id — without it, a retry after a failed install resumes the SAME
   // upload on the SAME validator (the id is derived from the hash), which
   // pins the deploy to that validator even when it's wedged.
-  transient let BUILD_TAG : Text = "2026-09-27 screenshots";
+  transient let BUILD_TAG : Text = "2026-10-01 quarantine stops serving";
 
   public query func build_tag() : async Text { BUILD_TAG };
 
@@ -440,13 +440,26 @@ persistent actor Backend {
       status = g.status;
       plays = playCount(g.slug);
       favorites = favCount(g.slug);
-      cover = switch (Map.get(coverStore, Text.compare, g.slug)) {
-        case (?_) true;
-        case null false;
+      // While quarantined nothing under /g/<slug>/ serves, so don't advertise
+      // assets the fetch would 451 on — the shelf falls back to the generated
+      // poster instead of a broken image.
+      cover = switch (g.status) {
+        case (#quarantined _) false;
+        case (#live) {
+          switch (Map.get(coverStore, Text.compare, g.slug)) {
+            case (?_) true;
+            case null false;
+          };
+        };
       };
-      shots = switch (Map.get(shotStore, Text.compare, g.slug)) {
-        case (?l) List.size(l);
-        case null 0;
+      shots = switch (g.status) {
+        case (#quarantined _) 0;
+        case (#live) {
+          switch (Map.get(shotStore, Text.compare, g.slug)) {
+            case (?l) List.size(l);
+            case null 0;
+          };
+        };
       };
       resW = res.w;
       resH = res.h;
@@ -628,6 +641,9 @@ persistent actor Backend {
             ignore Map.delete(shotStore, Text.compare, slug);
             ignore Map.delete(gameRes, Text.compare, slug);
             ignore Map.delete(playCounts, Text.compare, slug);
+            // Reports die with the listing: a future game under this freed
+            // slug is a different work and must not inherit its accusers.
+            ignore Map.delete(reports, Text.compare, slug);
             #ok;
           };
         };
@@ -1200,6 +1216,15 @@ persistent actor Backend {
         switch (Map.get(games, Text.compare, slug)) {
           case null { #err "no such game" };
           case (?g) {
+            // One active case per game: freezing an already-quarantined game
+            // would open a second case, and the stale one could later revive
+            // the listing out from under the newer one.
+            switch (g.status) {
+              case (#quarantined q) {
+                return #err ("already quarantined — case " # Nat.toText(q.caseId) # " is open");
+              };
+              case (#live) {};
+            };
             caseSeq += 1;
             let id = caseSeq;
             g.status := #quarantined { caseId = id };
@@ -1249,27 +1274,53 @@ persistent actor Backend {
             for (v in Map.values(c.votes)) {
               switch (v) { case (#restore) restores += 1; case (#delist) delists += 1 };
             };
+            // A verdict only acts on the game while it is quarantined BY THIS
+            // case — a stale case must never flip a listing a newer case (or
+            // nobody) governs. The case itself still resolves either way.
             if (restores >= PANEL_MAJORITY) {
               c.resolved := ?#restore;
               switch (Map.get(games, Text.compare, c.slug)) {
-                case (?g) g.status := #live;
+                case (?g) {
+                  switch (g.status) {
+                    case (#quarantined q) {
+                      if (q.caseId == c.id) {
+                        g.status := #live;
+                        ignore Map.delete(reports, Text.compare, c.slug);
+                      };
+                    };
+                    case (#live) {};
+                  };
+                };
                 case null {};
               };
-              ignore Map.delete(reports, Text.compare, c.slug);
               logAction("restore", c.slug, "panel", "reports not substantiated", caseId);
             } else if (delists >= PANEL_MAJORITY) {
               c.resolved := ?#delist;
               switch (Map.get(games, Text.compare, c.slug)) {
                 case (?g) {
-                  let next = strikeCount(g.ownerAnchor) + 1;
-                  Map.add(strikes, Blob.compare, g.ownerAnchor, next);
-                  logAction("delist", c.slug, "panel", "removed from the shelves", caseId);
-                  logAction("strike", c.slug, "panel", g.ownerName # " — strike " # Nat.toText(next), caseId);
-                  ignore Map.delete(games, Text.compare, c.slug);
-                  ignore Map.delete(fileStore, Text.compare, c.slug);
-                  ignore Map.delete(coverStore, Text.compare, c.slug);
-                  ignore Map.delete(shotStore, Text.compare, c.slug);
-                  ignore Map.delete(favorites, Text.compare, c.slug);
+                  switch (g.status) {
+                    case (#quarantined q) {
+                      if (q.caseId == c.id) {
+                        let next = strikeCount(g.ownerAnchor) + 1;
+                        Map.add(strikes, Blob.compare, g.ownerAnchor, next);
+                        logAction("delist", c.slug, "panel", "removed from the shelves", caseId);
+                        logAction("strike", c.slug, "panel", g.ownerName # " — strike " # Nat.toText(next), caseId);
+                        ignore Map.delete(games, Text.compare, c.slug);
+                        ignore Map.delete(fileStore, Text.compare, c.slug);
+                        ignore Map.delete(coverStore, Text.compare, c.slug);
+                        ignore Map.delete(shotStore, Text.compare, c.slug);
+                        ignore Map.delete(favorites, Text.compare, c.slug);
+                        ignore Map.delete(gameRes, Text.compare, c.slug);
+                        ignore Map.delete(playCounts, Text.compare, c.slug);
+                        // Same rule as unpublish: reports die with the
+                        // listing, or the next publisher under this freed
+                        // slug inherits its accusers and one fresh report
+                        // re-quarantines a game nobody has seen.
+                        ignore Map.delete(reports, Text.compare, c.slug);
+                      };
+                    };
+                    case (#live) {};
+                  };
                 };
                 case null {};
               };
@@ -1419,6 +1470,26 @@ persistent actor Backend {
     let file = if (segs.size() == 2) "index.html" else {
       Text.join(Iter.fromArray(Array.sliceToArray(segs, 2, segs.size())), "/");
     };
+    // Quarantined (report threshold or emergency freeze): NOTHING under
+    // /g/<slug>/ serves — not the bundle, not the cover, not the shots. This
+    // is what makes the emergency brake actually stop malware, not just hide
+    // the card; without it quarantine only flips a flag the frontend honors.
+    switch (Map.get(games, Text.compare, slug)) {
+      case (?g) {
+        switch (g.status) {
+          case (#quarantined _) {
+            return {
+              status_code = 451;
+              headers = [("content-type", "text/plain; charset=utf-8")];
+              body = Text.encodeUtf8("'" # slug # "' is under review by the curator panel");
+              streaming_strategy = null;
+            };
+          };
+          case (#live) {};
+        };
+      };
+      case null {};
+    };
     // A screenshot: /g/<slug>/__shot/<i>, served inline like a cover.
     if (Text.startsWith(file, #text "__shot/")) {
       let idxText = Text.replace(file, #text "__shot/", "");
@@ -1479,6 +1550,17 @@ persistent actor Backend {
   // streaming strategy in serveBytes). Serves only public vault bytes — the
   // same bytes http_request already serves, so no new exposure.
   public query func http_request_streaming_callback(token : StreamingToken) : async StreamingCallbackResponse {
+    // A stream that began before a quarantine stops at its next chunk — the
+    // gate in http_request can't see chunks the node pulls via this callback.
+    switch (Map.get(games, Text.compare, token.slug)) {
+      case (?g) {
+        switch (g.status) {
+          case (#quarantined _) { return { body = Blob.fromArray([]); token = null } };
+          case (#live) {};
+        };
+      };
+      case null {};
+    };
     switch (Map.get(fileStore, Text.compare, token.slug)) {
       case null { { body = Blob.fromArray([]); token = null } };
       case (?fm) {
