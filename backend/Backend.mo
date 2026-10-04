@@ -238,6 +238,15 @@ persistent actor Backend {
   // slug → play count (kept out of the Game record for upgrade safety)
   let playCounts = Map.empty<Text, Nat>();
 
+  // Usernames — the public gaming handle. The Memphis name is an IDENTITY
+  // (kareem.thebes, chosen for a passkey, not an audience); the username is
+  // what bylines and the mod log credit. Unique case-insensitively: the
+  // lowercased key map is the uniqueness guarantee, held on-chain so two
+  // accounts can never present the same handle. Both are new top-level
+  // stable vars (upgrade-safe, same pattern as gameRes / playCounts).
+  let usernames = Map.empty<Blob, Text>(); // anchor → handle, case as typed
+  let usernameKeys = Map.empty<Text, Blob>(); // lowercased handle → anchor
+
   // Moderation state.
   var platformOwner : ?Blob = null; // set once via claim_owner (trust-on-first-use)
   let curators = Set.empty<Blob>(); // curator anchors (the owner is one)
@@ -287,7 +296,7 @@ persistent actor Backend {
   // upload_id — without it, a retry after a failed install resumes the SAME
   // upload on the SAME validator (the id is derived from the hash), which
   // pins the deploy to that validator even when it's wedged.
-  transient let BUILD_TAG : Text = "2026-10-01 quarantine stops serving";
+  transient let BUILD_TAG : Text = "2026-10-04 usernames";
 
   public query func build_tag() : async Text { BUILD_TAG };
 
@@ -477,6 +486,144 @@ persistent actor Backend {
     { offset = off; length = len };
   };
 
+  // ─── Usernames (the public gaming handle) ───────────────────────────────
+
+  transient let USERNAME_MIN : Nat = 3;
+  transient let USERNAME_MAX : Nat = 20;
+
+  // Case-insensitive uniqueness key. Validation restricts handles to ASCII,
+  // so the house lowerChar covers every character a handle can contain.
+  func usernameKey(u : Text) : Text {
+    Text.fromIter(Iter.map(u.chars(), lowerChar));
+  };
+
+  // 3–20 chars of a–z A–Z 0–9 space _ -, starting and ending with a letter
+  // or digit, no double spaces. Returns the reason to show, or null if fine.
+  func usernameRejection(u : Text) : ?Text {
+    let n = Text.size(u);
+    if (n < USERNAME_MIN) return ?"username too short (3 characters min)";
+    if (n > USERNAME_MAX) return ?"username too long (20 characters max)";
+    var prevSpace = false;
+    var i = 0;
+    for (c in u.chars()) {
+      let alnum = Char.isDigit(c) or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');
+      if (not (alnum or c == ' ' or c == '_' or c == '-')) {
+        return ?"username may only use letters, digits, spaces, _ and -";
+      };
+      if ((i == 0 or i + 1 == n) and not alnum) {
+        return ?"username must start and end with a letter or digit";
+      };
+      if (c == ' ' and prevSpace) return ?"username may not contain double spaces";
+      prevSpace := c == ' ';
+      i += 1;
+    };
+    null;
+  };
+
+  // The public handle for a session: the chosen username, else the Memphis
+  // display tag — honest plumbing until they pick one.
+  func displayOf(s : Session) : Text {
+    switch (Map.get(usernames, Blob.compare, s.anchor)) {
+      case (?u) u;
+      case null s.name;
+    };
+  };
+
+  // Copy a game with a new byline (Game has var fields, so spell it out —
+  // same shape as adopt_game).
+  func withByline(g : Game, name : Text) : Game {
+    {
+      slug = g.slug;
+      title = g.title;
+      tagline = g.tagline;
+      description = g.description;
+      tags = g.tags;
+      rating = g.rating;
+      ownerAnchor = g.ownerAnchor;
+      ownerName = name;
+      source = g.source;
+      var sizeBytes = g.sizeBytes;
+      var status = g.status;
+      createdAtNs = g.createdAtNs;
+      var updatedAtNs = g.updatedAtNs;
+      var finished = g.finished;
+    };
+  };
+
+  // Pick or change the handle. Uniqueness is first-come (case-insensitive);
+  // a rename frees the old handle for anyone else to claim.
+  public shared func set_username(token : Blob, username : Text) : async {
+    #ok;
+    #err : Text;
+  } {
+    switch (await* authed(token)) {
+      case null { #err "not signed in" };
+      case (?s) {
+        switch (usernameRejection(username)) {
+          case (?reason) return #err reason;
+          case null {};
+        };
+        let key = usernameKey(username);
+        switch (Map.get(usernameKeys, Text.compare, key)) {
+          case (?holder) {
+            // Same anchor re-keying (e.g. a case change) is allowed.
+            if (holder != s.anchor) return #err "that username is taken";
+          };
+          case null {};
+        };
+        let old = Map.get(usernames, Blob.compare, s.anchor);
+        switch (old) {
+          case (?o) { ignore Map.delete(usernameKeys, Text.compare, usernameKey(o)) };
+          case null {};
+        };
+        Map.add(usernames, Blob.compare, s.anchor, username);
+        Map.add(usernameKeys, Text.compare, key, s.anchor);
+        // Re-credit the bylines that showed the PREVIOUS auto/chosen handle
+        // (the display tag before a first pick, the old username after). A
+        // byline that was deliberately different — the adopted house games'
+        // "thebes" — stays put: who may edit and who is credited are
+        // separate questions. Collect first; don't mutate while iterating.
+        let prev = switch (old) { case (?o) o; case null s.name };
+        let toUpdate = List.empty<Game>();
+        for (g in Map.values(games)) {
+          if (g.ownerAnchor == s.anchor and g.ownerName == prev and g.ownerName != username) {
+            List.add(toUpdate, g);
+          };
+        };
+        for (g in List.values(toUpdate)) {
+          Map.add(games, Text.compare, g.slug, withByline(g, username));
+        };
+        #ok;
+      };
+    };
+  };
+
+  // The caller's chosen handle, if any (drives the picker's initial state).
+  public shared func my_username(token : Blob) : async ?Text {
+    switch (await* authed(token)) {
+      case null null;
+      case (?s) Map.get(usernames, Blob.compare, s.anchor);
+    };
+  };
+
+  // Live availability for the picker — a public query (it reveals nothing
+  // the uniqueness error on set_username wouldn't).
+  public query func username_check(username : Text) : async {
+    #free;
+    #taken;
+    #invalid : Text;
+  } {
+    switch (usernameRejection(username)) {
+      case (?reason) #invalid reason;
+      case null {
+        switch (Map.get(usernameKeys, Text.compare, usernameKey(username))) {
+          case (?_) #taken;
+          case null #free;
+        };
+      };
+    };
+  };
+
   // ─── Publishing (auth-gated, chunked upload) ───────────────────────────
 
   public shared func begin_publish(token : Blob, meta : GameMeta) : async {
@@ -525,7 +672,7 @@ persistent actor Backend {
           tags = meta.tags;
           rating = meta.rating;
           ownerAnchor = s.anchor;
-          ownerName = s.name;
+          ownerName = displayOf(s);
           source = #vault;
           var sizeBytes = 0;
           var status = #live;
@@ -768,7 +915,7 @@ persistent actor Backend {
                   var finished = g.finished;
                 };
                 Map.add(games, Text.compare, slug, adopted);
-                logAction("adopt", slug, s.name, "took over an unowned house listing", 0);
+                logAction("adopt", slug, displayOf(s), "took over an unowned house listing", 0);
                 #ok;
               };
             };
@@ -1107,7 +1254,7 @@ persistent actor Backend {
           case (?s) {
             platformOwner := ?s.anchor;
             Set.add(curators, Blob.compare, s.anchor);
-            logAction("owner", "", s.name, "claimed platform ownership", 0);
+            logAction("owner", "", displayOf(s), "claimed platform ownership", 0);
             #ok;
           };
         };
@@ -1127,7 +1274,7 @@ persistent actor Backend {
           case (?o) {
             if (o != s.anchor) return #err "owner only";
             Set.add(curators, Blob.compare, curatorAnchor);
-            logAction("curator", "", s.name, "appointed a curator", 0);
+            logAction("curator", "", displayOf(s), "appointed a curator", 0);
             #ok;
           };
           case null { #err "no owner yet" };
@@ -1165,7 +1312,7 @@ persistent actor Backend {
             };
             if (Set.contains(set, Blob.compare, s.anchor)) return #err "you already reported this";
             Set.add(set, Blob.compare, s.anchor);
-            logAction("report", slug, s.name, reason, 0);
+            logAction("report", slug, displayOf(s), reason, 0);
             switch (g.status) {
               case (#live) {
                 if (Set.size(set) >= QUARANTINE_THRESHOLD) {
@@ -1241,7 +1388,7 @@ persistent actor Backend {
                 var resolved = (null : ?Verdict);
               },
             );
-            logAction("emergency-freeze", slug, s.name, reason, id);
+            logAction("emergency-freeze", slug, displayOf(s), reason, id);
             #ok id;
           };
         };
@@ -1268,7 +1415,7 @@ persistent actor Backend {
             };
             let verdict : Verdict = if (restore) #restore else #delist;
             Map.add(c.votes, Blob.compare, s.anchor, verdict);
-            logAction("vote", c.slug, s.name, if (restore) "restore" else "delist", caseId);
+            logAction("vote", c.slug, displayOf(s), if (restore) "restore" else "delist", caseId);
             var restores = 0;
             var delists = 0;
             for (v in Map.values(c.votes)) {

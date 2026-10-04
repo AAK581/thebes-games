@@ -7,15 +7,121 @@
  *
  * Signed in: the identity and a sign-out button.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { MemphisAuth } from "./useMemphis";
+import { setUsername, usernameCheck, type UsernameCheck } from "./registry";
 
-export default function MemphisGate({ auth }: { auth: MemphisAuth }) {
+/**
+ * The gaming-handle picker. The Memphis name above is an IDENTITY; this is
+ * the public byline games and the mod log credit — unique across the site,
+ * enforced on-chain (the availability hint here is UX; set_username is the
+ * guarantee).
+ */
+function UsernameField({
+  token,
+  username,
+  onUsernameChange,
+}: {
+  token: string;
+  username: string | null | undefined;
+  onUsernameChange: (u: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const [avail, setAvail] = useState<UsernameCheck | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  // Prefill once the current handle loads (undefined = still loading).
+  useEffect(() => {
+    if (typeof username === "string") setDraft(username);
+  }, [username]);
+
+  const unchanged =
+    typeof username === "string" &&
+    draft.trim().toLowerCase() === username.toLowerCase();
+
+  // Debounced live availability — a public query, cheap and non-binding.
+  useEffect(() => {
+    const d = draft.trim();
+    setAvail(null);
+    if (!d || unchanged) return;
+    const t = setTimeout(() => {
+      usernameCheck(d).then(setAvail).catch(() => setAvail(null));
+    }, 500);
+    return () => clearTimeout(t);
+  }, [draft, unchanged]);
+
+  async function save() {
+    const d = draft.trim();
+    if (!d) return;
+    setSaving(true);
+    setMsg("");
+    try {
+      await setUsername(token, d);
+      onUsernameChange(d);
+      setMsg("saved — your games and log entries now credit it");
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (username === undefined) {
+    return <p className="hint">gaming handle: checking…</p>;
+  }
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!saving && draft.trim() && !unchanged) void save();
+      }}
+    >
+      <label htmlFor="gate-username">Gaming handle</label>
+      <input
+        id="gate-username"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder="ShadowFox"
+        maxLength={20}
+      />
+      <button type="submit" disabled={saving || !draft.trim() || unchanged}>
+        {saving ? "saving…" : username ? "Change" : "Claim it"}
+      </button>
+      {avail && !unchanged && (
+        <p className="hint">
+          {avail.state === "free" && "free — nobody has it"}
+          {avail.state === "taken" && "taken — someone beat you to it"}
+          {avail.state === "invalid" && avail.reason}
+        </p>
+      )}
+      {msg && <p className="hint">{msg}</p>}
+      <p className="hint">
+        The public name on your games and in the transparency log — one holder
+        per handle, held on-chain. Your identity name above stays private to
+        sign-in.
+      </p>
+    </form>
+  );
+}
+
+export default function MemphisGate({
+  auth,
+  username,
+  onUsernameChange,
+}: {
+  auth: MemphisAuth;
+  /** Chosen handle: string = set, null = none, undefined = loading. */
+  username: string | null | undefined;
+  onUsernameChange: (u: string) => void;
+}) {
   const [name, setName] = useState("");
   const [copied, setCopied] = useState(false);
 
   if (auth.signedIn) {
     const anchorHex = auth.session?.anchor_id_hex || "";
+    const token = auth.session?.session_token_hex || "";
     return (
       <section className="panel memphis">
         <h2>Identity — Memphis passkey</h2>
@@ -25,6 +131,11 @@ export default function MemphisGate({ auth }: { auth: MemphisAuth }) {
             <span className="tag"> #{auth.session.display_tag}</span>
           )}
         </p>
+        <UsernameField
+          token={token}
+          username={username}
+          onUsernameChange={onUsernameChange}
+        />
         {anchorHex && (
           <p className="hint">
             anchor id{" "}

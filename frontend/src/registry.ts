@@ -369,6 +369,37 @@ export async function addCurator(tokenHex: string, anchor: Uint8Array): Promise<
   unwrap<null>(res, "add_curator");
 }
 
+// ─── usernames (the public gaming handle) ────────────────────────────────
+//
+// The Memphis name is an identity (kareem.thebes); the username is what
+// bylines and the mod log show. Unique case-insensitively, enforced on-chain.
+
+const UsernameCheckT = IDL.Variant({ free: IDL.Null, taken: IDL.Null, invalid: IDL.Text });
+
+export type UsernameCheck =
+  | { state: "free" }
+  | { state: "taken" }
+  | { state: "invalid"; reason: string };
+
+export async function setUsername(tokenHex: string, username: string): Promise<void> {
+  const [res] = dec([ResUnit], await callRaw("set_username", enc([BlobT, IDL.Text], [fromHex(tokenHex), username])));
+  unwrap<null>(res, "set_username");
+}
+
+export async function myUsername(tokenHex: string): Promise<string | null> {
+  const [opt] = dec([IDL.Opt(IDL.Text)], await callRaw("my_username", enc([BlobT], [fromHex(tokenHex)])));
+  const arr = opt as string[];
+  return arr.length ? arr[0] : null;
+}
+
+export async function usernameCheck(username: string): Promise<UsernameCheck> {
+  const [v] = dec([UsernameCheckT], await queryRaw("username_check", enc([IDL.Text], [username])));
+  const r = v as Record<string, unknown>;
+  if ("free" in r) return { state: "free" };
+  if ("taken" in r) return { state: "taken" };
+  return { state: "invalid", reason: String(r.invalid) };
+}
+
 // ─── moderation ──────────────────────────────────────────────────────────
 
 export async function report(tokenHex: string, slug: string, reason: string): Promise<void> {

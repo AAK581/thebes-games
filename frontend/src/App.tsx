@@ -9,7 +9,7 @@ import { clearAllConsent } from "./memphisDelegation";
 import MemphisGate from "./MemphisGate";
 import { useHashRoute } from "./router";
 import { Frieze, Mark } from "./components";
-import { amIOwner } from "./registry";
+import { amIOwner, myUsername } from "./registry";
 import Home from "./pages/Home";
 import GamePage from "./pages/Game";
 import Upload from "./pages/Upload";
@@ -38,6 +38,25 @@ export default function App() {
     amIOwner(token)
       .then((v) => !stale && setIsOwner(v))
       .catch(() => !stale && setIsOwner(false));
+    return () => {
+      stale = true;
+    };
+  }, [token]);
+
+  // The gaming handle — the public byline. string = set, null = none,
+  // undefined = loading. Lives here so the header chip, the identity drawer,
+  // and the publish nudge all agree.
+  const [username, setUsername] = useState<string | null | undefined>(null);
+  useEffect(() => {
+    if (!token) {
+      setUsername(null);
+      return;
+    }
+    let stale = false;
+    setUsername(undefined);
+    myUsername(token)
+      .then((u) => !stale && setUsername(u))
+      .catch(() => !stale && setUsername(null));
     return () => {
       stale = true;
     };
@@ -88,7 +107,7 @@ export default function App() {
         </nav>
         {auth.signedIn ? (
           <button className="quiet authchip" onClick={() => setAuthOpen(!authOpen)}>
-            ⊙ {auth.displayName}
+            ⊙ {username || auth.displayName}
           </button>
         ) : (
           <button
@@ -103,7 +122,11 @@ export default function App() {
 
       {authOpen && (
         <div className="authdrawer">
-          <MemphisGate auth={auth} />
+          <MemphisGate
+            auth={auth}
+            username={username}
+            onUsernameChange={setUsername}
+          />
         </div>
       )}
 
@@ -117,7 +140,11 @@ export default function App() {
           />
         )}
         {route.name === "upload" && (
-          <Upload auth={auth} onRequestSignIn={() => setAuthOpen(true)} />
+          <Upload
+            auth={auth}
+            username={username ?? null}
+            onRequestSignIn={() => setAuthOpen(true)}
+          />
         )}
         {route.name === "mine" && (
           <MyGames auth={auth} onRequestSignIn={() => setAuthOpen(true)} />

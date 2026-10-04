@@ -248,6 +248,66 @@ async function vote(who, caseId, restore) {
   console.log("\n  ── full log (oldest first) ──");
   for (const e of [...log].reverse()) console.log(`  ${e.action.padEnd(16)} ${e.target.padEnd(22)} ${e.who.padEnd(10)} ${e.detail}  ${Number(e.caseId) ? "case " + e.caseId : ""}`);
 
+  console.log("═══ H. usernames: the public gaming handle ═══");
+  const UsernameCheck = IDL.Variant({ free: IDL.Null, taken: IDL.Null, invalid: IDL.Text });
+  const ResUnitV = ResUnit;
+  const setU = async (who, u) => {
+    const [v] = dec([ResUnitV], await call("set_username", enc([Blob, IDL.Text], [tok(who), u])));
+    return v;
+  };
+  const checkU = async (u) => {
+    const [v] = dec([UsernameCheck], await query("username_check", enc([IDL.Text], [u])));
+    return v;
+  };
+  const myU = async (who) => {
+    const [v] = dec([IDL.Opt(IDL.Text)], await call("my_username", enc([Blob], [tok(who)])));
+    return v.length ? v[0] : null;
+  };
+
+  check("H1 fresh handle reads free", "free" in (await checkU("Paula Power")));
+  const h2 = await setU("paula", "Paula Power");
+  check("H2 paula picks Paula Power", "ok" in h2, JSON.stringify(h2));
+  check("H3 my_username roundtrips", (await myU("paula")) === "Paula Power");
+  const h4 = await setU("r1", "paula power");
+  check("H4 case-insensitive duplicate rejected", "err" in h4 && h4.err.includes("taken"), JSON.stringify(h4));
+  check("H5 availability agrees (taken)", "taken" in (await checkU("PAULA POWER")));
+  const h6a = await setU("r1", "ab");
+  check("H6a too short rejected", "err" in h6a && h6a.err.includes("short"));
+  const h6b = await setU("r1", "bad!chars");
+  check("H6b bad charset rejected", "err" in h6b && h6b.err.includes("letters"));
+  const h6c = await setU("r1", "-leading");
+  check("H6c leading hyphen rejected", "err" in h6c && h6c.err.includes("start"));
+  const h6d = await setU("r1", "double  space");
+  check("H6d double space rejected", "err" in h6d && h6d.err.includes("double"));
+  const h6e = await setU("badguy", "Sneaky");
+  check("H6e invalid session cannot set", "err" in h6e && h6e.err.includes("not signed in"));
+  check("H6f invalid handle reads invalid", "invalid" in (await checkU("x")));
+
+  g = await gameOf(slug2);
+  check("H7 existing byline re-credited (paula → Paula Power)", g && g.owner === "Paula Power", g && g.owner);
+
+  const h8set = await setU("newbie", "Shadow Fox");
+  check("H8a newbie picks Shadow Fox", "ok" in h8set);
+  const pubN = await publish("newbie", "Fox Game", "FOXY");
+  check("H8b publish credits the handle", "ok" in pubN && (await gameOf(pubN.ok)).owner === "Shadow Fox", JSON.stringify(pubN));
+
+  const h9 = await setU("paula", "PPower");
+  check("H9a rename ok", "ok" in h9);
+  g = await gameOf(slug2);
+  check("H9b byline follows the rename", g && g.owner === "PPower", g && g.owner);
+  const h9c = await setU("r1", "Paula Power");
+  check("H9c rename freed the old handle (r1 claims it)", "ok" in h9c, JSON.stringify(h9c));
+  const h9d = await setU("paula", "ppower");
+  check("H9d own-handle case change allowed", "ok" in h9d, JSON.stringify(h9d));
+
+  await report("r2", pubN.ok, "testing the log byline");
+  const log2 = await modLog();
+  check("H10 mod log uses the handle (r2 has none → tag)", log2[0].action === "report" && log2[0].who === "r2", log2[0] && `${log2[0].action}/${log2[0].who}`);
+  const r1rep = await report("r1", pubN.ok, "handle in the log");
+  check("H11a r1 reports", "ok" in r1rep);
+  const log3 = await modLog();
+  check("H11b mod log credits r1's handle", log3[0].who === "Paula Power", log3[0] && log3[0].who);
+
   console.log(`\n═══ RESULT: ${pass} passed, ${fail} failed, ${findings.length} findings ═══`);
   for (const f of findings) console.log(`  ▲ ${f}`);
   process.exit(fail > 0 ? 1 : 0);

@@ -72,9 +72,12 @@ type Phase = "idle" | "working" | "done" | "error";
 
 export default function Upload({
   auth,
+  username,
   onRequestSignIn,
 }: {
   auth: MemphisAuth;
+  /** The chosen gaming handle; null = none picked yet. */
+  username: string | null;
   onRequestSignIn: () => void;
 }) {
   const [title, setTitle] = useState("");
@@ -233,6 +236,19 @@ export default function Upload({
               owned by your anchor, on chain.{" "}
               <button className="quiet" onClick={onRequestSignIn}>
                 Sign in
+              </button>
+            </p>
+          )}
+          {auth.signedIn && !username && (
+            <p className="hint">
+              Games are credited to a gaming handle. You haven't picked one, so
+              your byline would be your anchor tag
+              {auth.session?.display_tag ? (
+                <> (#{auth.session.display_tag})</>
+              ) : null}
+              .{" "}
+              <button className="quiet" onClick={onRequestSignIn}>
+                Pick a handle
               </button>
             </p>
           )}
