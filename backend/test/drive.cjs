@@ -308,6 +308,15 @@ async function vote(who, caseId, restore) {
   const log3 = await modLog();
   check("H11b mod log credits r1's handle", log3[0].who === "Paula Power", log3[0] && log3[0].who);
 
+  // anchor_for_username — the reverse lookup the admin desk appoints by.
+  const anchorForU = async (u) => {
+    const [v] = dec([IDL.Opt(Blob)], await query("anchor_for_username", enc([IDL.Text], [u])));
+    return v.length ? Buffer.from(v[0]).toString("utf8") : null; // mock: anchor == token text
+  };
+  check("H12a handle resolves to its anchor", (await anchorForU("Shadow Fox")) === "newbie", JSON.stringify(await anchorForU("Shadow Fox")));
+  check("H12b case-insensitive", (await anchorForU("shadow fox")) === "newbie");
+  check("H12c unknown handle → null", (await anchorForU("Nobody At All")) === null);
+
   console.log(`\n═══ RESULT: ${pass} passed, ${fail} failed, ${findings.length} findings ═══`);
   for (const f of findings) console.log(`  ▲ ${f}`);
   process.exit(fail > 0 ? 1 : 0);

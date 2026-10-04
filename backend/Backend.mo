@@ -296,7 +296,7 @@ persistent actor Backend {
   // upload_id — without it, a retry after a failed install resumes the SAME
   // upload on the SAME validator (the id is derived from the hash), which
   // pins the deploy to that validator even when it's wedged.
-  transient let BUILD_TAG : Text = "2026-10-04 usernames";
+  transient let BUILD_TAG : Text = "2026-10-04 usernames + appoint by handle";
 
   public query func build_tag() : async Text { BUILD_TAG };
 
@@ -622,6 +622,14 @@ persistent actor Backend {
         };
       };
     };
+  };
+
+  // Reverse lookup: gaming handle → anchor id, case-insensitive. The
+  // Memphis analogue (anchor_for_name) only knows identity names; this lets
+  // the owner appoint a curator by the public gaming handle too. Public, like
+  // every other reverse lookup — the anchor id is already public.
+  public query func anchor_for_username(username : Text) : async ?Blob {
+    Map.get(usernameKeys, Text.compare, usernameKey(username));
   };
 
   // ─── Publishing (auth-gated, chunked upload) ───────────────────────────

@@ -11,10 +11,21 @@
  */
 import { useEffect, useState } from "react";
 import type { MemphisAuth } from "../useMemphis";
-import { resolveAnchorByName } from "../useMemphis";
-import { addCurator, adoptableGames, openCases, type OpenCase } from "../registry";
+import { resolveAnchorByName, displayTagOf } from "../useMemphis";
+import {
+  addCurator,
+  adoptableGames,
+  anchorForUsername,
+  openCases,
+  type OpenCase,
+} from "../registry";
 
-type Resolved = { name: string; anchor: Uint8Array; tag: string };
+type Resolved = {
+  label: string;
+  kind: "handle" | "identity";
+  anchor: Uint8Array;
+  tag: string;
+};
 
 export default function Admin({
   auth,
@@ -44,17 +55,33 @@ export default function Admin({
       .catch(() => setAdoptable(0));
   }, [isOwner]);
 
+  // Resolve a gaming handle first (what the owner is likeliest to know),
+  // then fall back to a .thebes identity name. Either yields an anchor.
   async function lookUp() {
     setBusy(true);
     setMsg("");
     setFound(null);
+    const q = name.trim();
     try {
-      const r = await resolveAnchorByName(name);
-      if (r) setFound(r);
-      else
-        setMsg(
-          "no identity has claimed that name — they need to sign in here once first (first sign-in registers it)"
-        );
+      const byHandle = await anchorForUsername(q);
+      if (byHandle) {
+        setFound({ label: q, kind: "handle", anchor: byHandle, tag: displayTagOf(byHandle) });
+        return;
+      }
+      // Not a known handle — try it as an identity name (adds .thebes itself;
+      // a malformed one throws, which we surface).
+      try {
+        const byName = await resolveAnchorByName(q);
+        if (byName) {
+          setFound({ label: byName.name, kind: "identity", anchor: byName.anchor, tag: byName.tag });
+          return;
+        }
+      } catch {
+        /* not a valid identity name either — fall through to the hint */
+      }
+      setMsg(
+        "no gaming handle or identity by that name — they need to sign in here once (and, for a handle, pick one in the identity drawer)"
+      );
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -68,7 +95,7 @@ export default function Admin({
     setMsg("");
     try {
       await addCurator(token, found.anchor);
-      setMsg(`${found.name} is a curator now — publicly logged`);
+      setMsg(`${found.label} is a curator now — publicly logged`);
       setFound(null);
       setName("");
     } catch (e) {
@@ -138,8 +165,8 @@ export default function Admin({
               setName(e.target.value);
               setFound(null);
             }}
-            placeholder="theirname.thebes"
-            aria-label="Memphis name to appoint"
+            placeholder="gaming handle or name.thebes"
+            aria-label="Gaming handle or Memphis name to appoint"
           />
           <button type="submit" disabled={busy || !name.trim()}>
             {busy && !found ? "looking up…" : "Look up"}
@@ -148,9 +175,10 @@ export default function Admin({
         {found && (
           <div className="row">
             <p>
-              found <strong>{found.name}</strong>
-              <span className="tag"> #{found.tag}</span> — check the tag with
-              them before appointing.
+              found <strong>{found.label}</strong>
+              <span className="tag"> #{found.tag}</span> (
+              {found.kind === "handle" ? "gaming handle" : "identity name"}) —
+              check the tag with them before appointing.
             </p>
             <button onClick={() => void appoint()} disabled={busy}>
               {busy ? "appointing…" : "Appoint as curator"}
@@ -159,9 +187,10 @@ export default function Admin({
         )}
         {msg && <p className="hint">{msg}</p>}
         <p className="hint">
-          Ask for their sign-in name — their first sign-in registers it, and
-          the anchor is looked up from the name, so nobody has to copy ids
-          around. Curators vote on reported games at the desk on the{" "}
+          Enter their gaming handle or their <code>.thebes</code> sign-in name
+          — either resolves to their anchor, so nobody copies ids around. A
+          handle needs them to have picked one; an identity name just needs one
+          sign-in here. Curators vote on reported games at the desk on the{" "}
           <a href="#/log">Log</a> page; a case resolves at 2 votes.
         </p>
       </section>

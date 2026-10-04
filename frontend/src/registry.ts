@@ -392,6 +392,13 @@ export async function myUsername(tokenHex: string): Promise<string | null> {
   return arr.length ? arr[0] : null;
 }
 
+/** Reverse lookup: gaming handle → anchor id (case-insensitive), or null. */
+export async function anchorForUsername(username: string): Promise<Uint8Array | null> {
+  const [opt] = dec([IDL.Opt(BlobT)], await queryRaw("anchor_for_username", enc([IDL.Text], [username])));
+  const arr = opt as number[][];
+  return arr.length ? Uint8Array.from(arr[0]) : null;
+}
+
 export async function usernameCheck(username: string): Promise<UsernameCheck> {
   const [v] = dec([UsernameCheckT], await queryRaw("username_check", enc([IDL.Text], [username])));
   const r = v as Record<string, unknown>;
