@@ -35,6 +35,9 @@ type Passkey = {
   ) => Promise<MemphisSession>;
   loadSession: () => MemphisSession | null;
   signOut: () => Promise<void>;
+  // Public name registry (Memphis queries; no session needed).
+  lookupAnchor: (name: string) => Promise<Uint8Array | null>;
+  validateName: (name: string) => string;
 };
 
 function pk(): Passkey {
@@ -45,6 +48,28 @@ function pk(): Passkey {
     );
   }
   return p;
+}
+
+/** The 4-hex-char public tag Memphis derives from an anchor (its last 2 bytes). */
+export function displayTagOf(anchor: Uint8Array): string {
+  return Array.from(anchor.slice(-2), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Resolve a registered Memphis name to its anchor id — the public
+ * `anchor_for_name` query, via passkey.js. Returns null when no identity has
+ * claimed the name; throws (with a readable reason) on a malformed name.
+ * The anchor id is public — it's the identifier roles are granted to, the
+ * substrate's analogue of showing a user their IC principal.
+ */
+export async function resolveAnchorByName(
+  name: string
+): Promise<{ name: string; anchor: Uint8Array; tag: string } | null> {
+  const n = name.trim().toLowerCase();
+  const full = n.endsWith(".thebes") ? n : `${n}.thebes`;
+  const valid = pk().validateName(full);
+  const anchor = await pk().lookupAnchor(valid);
+  return anchor ? { name: valid, anchor, tag: displayTagOf(anchor) } : null;
 }
 
 // Treat a session as gone slightly BEFORE its true expiry, so we never hand a

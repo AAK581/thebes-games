@@ -9,16 +9,39 @@ import { clearAllConsent } from "./memphisDelegation";
 import MemphisGate from "./MemphisGate";
 import { useHashRoute } from "./router";
 import { Frieze, Mark } from "./components";
+import { amIOwner } from "./registry";
 import Home from "./pages/Home";
 import GamePage from "./pages/Game";
 import Upload from "./pages/Upload";
 import MyGames from "./pages/MyGames";
 import Log from "./pages/Log";
+import Admin from "./pages/Admin";
 
 export default function App() {
   const auth = useMemphis();
   const route = useHashRoute();
   const [authOpen, setAuthOpen] = useState(false);
+
+  // Is this the platform owner? Drives the Admin nav link and the admin
+  // page's gate — display only; the backend re-checks every owner call.
+  // null = check in flight (so #/admin doesn't flash "not yours" at the
+  // owner while the registry answers).
+  const token = auth.session?.session_token_hex;
+  const [isOwner, setIsOwner] = useState<boolean | null>(false);
+  useEffect(() => {
+    if (!token) {
+      setIsOwner(false);
+      return;
+    }
+    let stale = false;
+    setIsOwner(null);
+    amIOwner(token)
+      .then((v) => !stale && setIsOwner(v))
+      .catch(() => !stale && setIsOwner(false));
+    return () => {
+      stale = true;
+    };
+  }, [token]);
 
   // Per-game delegated-sign-in consent is remembered until the platform
   // signs out (spec §5.1). Drop it all on the signed-in → signed-out edge.
@@ -57,6 +80,11 @@ export default function App() {
           <a href="#/log" {...current("log")}>
             Log
           </a>
+          {isOwner === true && (
+            <a href="#/admin" {...current("admin")}>
+              Admin
+            </a>
+          )}
         </nav>
         {auth.signedIn ? (
           <button className="quiet authchip" onClick={() => setAuthOpen(!authOpen)}>
@@ -95,6 +123,13 @@ export default function App() {
           <MyGames auth={auth} onRequestSignIn={() => setAuthOpen(true)} />
         )}
         {route.name === "log" && <Log auth={auth} />}
+        {route.name === "admin" && (
+          <Admin
+            auth={auth}
+            isOwner={isOwner}
+            onRequestSignIn={() => setAuthOpen(true)}
+          />
+        )}
       </main>
 
       <Frieze />

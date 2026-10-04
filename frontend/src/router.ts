@@ -14,7 +14,8 @@ export type Route =
   | { name: "game"; slug: string }
   | { name: "upload" }
   | { name: "mine" }
-  | { name: "log" };
+  | { name: "log" }
+  | { name: "admin" };
 
 function parse(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/");
@@ -27,6 +28,8 @@ function parse(hash: string): Route {
       return { name: "mine" };
     case "log":
       return { name: "log" };
+    case "admin":
+      return { name: "admin" };
     default:
       return { name: "home" };
   }

@@ -12,8 +12,10 @@ import type { MemphisAuth } from "./useMemphis";
 
 export default function MemphisGate({ auth }: { auth: MemphisAuth }) {
   const [name, setName] = useState("");
+  const [copied, setCopied] = useState(false);
 
   if (auth.signedIn) {
+    const anchorHex = auth.session?.anchor_id_hex || "";
     return (
       <section className="panel memphis">
         <h2>Identity — Memphis passkey</h2>
@@ -23,6 +25,26 @@ export default function MemphisGate({ auth }: { auth: MemphisAuth }) {
             <span className="tag"> #{auth.session.display_tag}</span>
           )}
         </p>
+        {anchorHex && (
+          <p className="hint">
+            anchor id{" "}
+            <code title={anchorHex}>
+              {anchorHex.slice(0, 8)}…{anchorHex.slice(-8)}
+            </code>{" "}
+            <button
+              className="quiet"
+              onClick={() => {
+                void navigator.clipboard.writeText(anchorHex).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                });
+              }}
+            >
+              {copied ? "copied" : "copy"}
+            </button>{" "}
+            — your public on-chain identifier (an id, not a secret).
+          </p>
+        )}
         <button onClick={() => void auth.signOut()} disabled={auth.busy}>
           {auth.busy ? "signing out…" : "Sign out"}
         </button>

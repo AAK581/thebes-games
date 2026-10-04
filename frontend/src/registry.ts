@@ -363,6 +363,12 @@ export async function amIOwner(tokenHex: string): Promise<boolean> {
   return b as boolean;
 }
 
+/** Owner-only: appoint a curator by their Memphis anchor id. */
+export async function addCurator(tokenHex: string, anchor: Uint8Array): Promise<void> {
+  const [res] = dec([ResUnit], await callRaw("add_curator", enc([BlobT, BlobT], [fromHex(tokenHex), anchor])));
+  unwrap<null>(res, "add_curator");
+}
+
 // ─── moderation ──────────────────────────────────────────────────────────
 
 export async function report(tokenHex: string, slug: string, reason: string): Promise<void> {
