@@ -1087,6 +1087,14 @@ button.chip {
   flex-wrap: wrap;
 }
 
+/* Admin: the lookup-kind selector (gaming handle / identity name / anchor). */
+.modepick {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+
 .hint {
   margin: 0.65rem 0 0;
   font-size: 0.8rem;
